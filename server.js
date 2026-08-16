@@ -229,7 +229,7 @@ app.use('/api', archivedApprovedRoutes);
 
 // 🔍 DUPLICATE MANAGEMENT ENDPOINTS
 app.use('/api/duplicates', duplicateReportRoutes);
-app.use('/api/duplicate-to-report', duplicateToReport);
+app.use('/api/duplicate-to-report', duplicateTOreport);
 
 console.log('✅ All routes mounted successfully');
 
