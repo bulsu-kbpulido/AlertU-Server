@@ -1,4 +1,4 @@
-// mediaRoutes.js - Fixed Content-Type matching & presigned URL generation
+// mediaRoutes.js - Production-Ready Presigned Upload & Proxy Streaming
 const express = require('express');
 const router = express.Router();
 const { 
@@ -8,8 +8,10 @@ const {
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
+// Environment configurations
 const BUCKET_NAME = process.env.B2_BUCKET_NAME || "alertu-media-storage";
 const INCIDENTS_PREFIX = "incidents";
+const BASE_URL = process.env.BASE_URL || "https://alertu-server.onrender.com";
 
 // Initialize Backblaze B2 S3 Client
 const s3 = new S3Client({
@@ -22,7 +24,7 @@ const s3 = new S3Client({
 });
 
 // -----------------------------------------------------------------------------
-// 1. GENERATE PRESIGNED UPLOAD URL & PERMANENT STREAM LINK
+// 1. GENERATE PRESIGNED UPLOAD URL & ABSOLUTE PRODUCTION STREAM LINK
 // -----------------------------------------------------------------------------
 router.post('/get-upload-url', async (req, res) => {
   try {
@@ -51,11 +53,11 @@ router.post('/get-upload-url', async (req, res) => {
       ContentType: fileType, // Client MUST send this exact Content-Type on PUT request
     });
 
-    // Generate 5-minute presigned upload link
+    // Generate 5-minute presigned upload link for Backblaze B2
     const uploadUrl = await getSignedUrl(s3, putCommand, { expiresIn: 300 });
 
-    // Permanent proxy streaming URL
-    const permanentStreamUrl = `/api/media/stream?storagePath=${encodeURIComponent(uniqueStoragePath)}`;
+    // Build absolute production URL using process.env.BASE_URL
+    const permanentStreamUrl = `${BASE_URL}/api/media/stream?storagePath=${encodeURIComponent(uniqueStoragePath)}`;
 
     return res.status(200).json({
       success: true,
@@ -92,7 +94,12 @@ router.get('/stream', async (req, res) => {
 
     const s3Response = await s3.send(command);
 
-    // Forward streaming headers
+    // Standard headers for CORS and Media Playback
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+
+    // Forward streaming headers from Backblaze
     if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
     if (s3Response.ContentLength) res.setHeader('Content-Length', s3Response.ContentLength);
     if (s3Response.ContentRange) res.setHeader('Content-Range', s3Response.ContentRange);
@@ -101,9 +108,22 @@ router.get('/stream', async (req, res) => {
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
+    // Set 206 Partial Content if client requested byte range (for seeking videos)
     res.status(rangeHeader ? 206 : 200);
 
-    s3Response.Body.pipe(res);
+    // Pipe stream directly to Express response
+    if (typeof s3Response.Body.pipe === 'function') {
+      s3Response.Body.pipe(res);
+    } else {
+      // Fallback for web stream objects
+      const stream = s3Response.Body;
+      stream.on('data', (chunk) => res.write(chunk));
+      stream.on('end', () => res.end());
+      stream.on('error', (err) => {
+        console.error('❌ Stream Error:', err.message);
+        res.end();
+      });
+    }
   } catch (error) {
     console.error('❌ Incident Media Stream Error:', error.message);
     return res.status(404).json({ success: false, error: 'Media file not found or inaccessible' });
