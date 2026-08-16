@@ -302,16 +302,21 @@ server.listen(PORT, '0.0.0.0', () => {
      JWT_SECRET: ${process.env.JWT_SECRET ? '✅ SET' : '⚠️ UNSET (Using Fallback Hash)'}
   `);
 
-  try {
-    const bonjour = new Bonjour();
-    bonjour.publish({ 
-      name: 'AlertU-Backend', 
-      type: 'http', 
-      port: parseInt(PORT) 
-    });
-    console.log(`📡 Broadcast service 'AlertU-Backend' is live on local network.\n`);
-  } catch (err) {
-    console.error("Failed to start Bonjour broadcasting:", err);
+  // MODIFICATION 1: Skip Bonjour broadcasting in cloud/production environments like Render
+  if (process.env.NODE_ENV !== 'production' && !process.env.RENDER) {
+    try {
+      const bonjour = new Bonjour();
+      bonjour.publish({ 
+        name: 'AlertU-Backend', 
+        type: 'http', 
+        port: parseInt(PORT) 
+      });
+      console.log(`📡 Broadcast service 'AlertU-Backend' is live on local network.\n`);
+    } catch (err) {
+      console.error("Failed to start Bonjour broadcasting:", err);
+    }
+  } else {
+    console.log(`ℹ️ Cloud environment detected. Local network Bonjour broadcasting skipped.\n`);
   }
 });
 
@@ -347,3 +352,17 @@ app.use((req, res) => {
     method: req.method
   });
 });
+
+// ==========================================
+// MODIFICATION 2: Graceful Shutdown Signal Handlers (Render Lifecycle)
+// ==========================================
+const handleShutdown = (signal) => {
+  console.log(`\n⚠️ Received ${signal}. Initiating graceful shutdown...`);
+  server.close(() => {
+    console.log('🛑 HTTP and WebSocket server closed cleanly.');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));
