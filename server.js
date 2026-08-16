@@ -199,7 +199,7 @@ app.use('/api', emailVerificationRoutes);
 app.use('/api', citizenListener);
 app.use('/api', linkRoutes);          
 app.use('/api', agoraRoutes);         
-app.use('/api', callHistoryRoutes);   
+app.use('/api', callhistoryroutes);   
 
 // 💬 REAL-TIME EMERGENCY CHAT ROUTE ENGINE
 app.use('/api/chats', chatRoutes);    
