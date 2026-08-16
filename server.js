@@ -158,7 +158,7 @@ const citizenListener = require('./citizenListener');
 const emailVerificationRoutes = require('./EmailVerificationRoute');
 const passwordForgotRoutes = require('./passwordforgot'); 
 const agoraRoutes = require('./agoraRoutes');
-const callHistoryRoutes = require('./callhistoryroutes'); 
+const callHistoryRoutes = require('./callHistoryRoutes');
 const chatRoutes = require('./chatRoutes'); 
 const sosHandlerRoutes = require('./SosHandler'); 
 const movementDetectorRoutes = require('./movementDetector'); // 🕵️‍♂️ Admin Movement Log Engine
@@ -199,7 +199,7 @@ app.use('/api', emailVerificationRoutes);
 app.use('/api', citizenListener);
 app.use('/api', linkRoutes);          
 app.use('/api', agoraRoutes);         
-app.use('/api', callhistoryroutes);   
+app.use('/api', callHistoryRoutes);   
 
 // 💬 REAL-TIME EMERGENCY CHAT ROUTE ENGINE
 app.use('/api/chats', chatRoutes);    
