@@ -175,7 +175,7 @@ const duplicateTOreport = require('./duplicateTOreport');
 console.log('✅ All route modules loaded successfully');
 
 // ==========================================
-// 2. Mount Endpoints under /api Prefix
+// 2. Mount Endpoints under Server Router
 // ==========================================
 console.log('🔌 Mounting routes...');
 
@@ -201,9 +201,11 @@ app.use('/api/auth', passwordForgotRoutes);
 app.use('/api/auth', superadpassForgotRoutes); 
 app.use('/api/auth', adminForgotPasswordRoutes); // Mounts /api/auth/send-admin-reset-otp & /api/auth/reset-admin-password
 
-// 📧 EMAIL VERIFICATION ENGINES
+// 📧 EMAIL VERIFICATION ENGINES (Flexible mounting handles /api/email-verification, /email-verification, /api, and root)
 app.use('/api/email-verification', emailVerificationRoutes);
+app.use('/email-verification', emailVerificationRoutes);
 app.use('/api', emailVerificationRoutes);
+app.use('/', emailVerificationRoutes);
 
 app.use('/api', citizenListener);
 app.use('/api', linkRoutes);          
@@ -277,7 +279,7 @@ server.listen(PORT, '0.0.0.0', () => {
      • Forgot Password Engine (/api/auth/send-reset-otp, /api/auth/reset-password)
      • SuperAdmin Forgot Password Engine (/api/auth/send-superadmin-reset-otp, /api/auth/reset-superadmin-password)
      • Admin Forgot Password Engine (/api/auth/send-admin-reset-otp, /api/auth/reset-admin-password)
-     • Email Verification (/api/email-verification/send-otp, /api/email-verification/verify-otp)
+     • Email Verification (/api/email-verification/send-otp, /email-verification/send-otp, /send-otp)
      • Admin Action Logger (/api/admin-actions/log)
      • Audit Log Cache & Limit Engine (/api/audit-logs)
      • Mobile Avatar Upload & Delete Engine (/api/citizens/upload-avatar, /api/citizens/avatar/delete)
