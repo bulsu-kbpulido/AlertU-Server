@@ -1,38 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 const db = getFirestore();
 
-// 📧 Configure Explicit Nodemailer Transporter
-// 🚀 Switched to Port 587 with STARTTLS + explicit connection timeouts to prevent Render hanging
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 2525,
-  secure: false, // Must be false for port 587 (uses STARTTLS)
-  family: 4,    // 🚀 FORCES IPV4: Prevents Render ENETUNREACH IPv6 connection errors
-  auth: {
-    user: process.env.EMAIL_USER, 
-    pass: process.env.EMAIL_PASS, // Requires 16-character Gmail App Password
-  },
-  connectionTimeout: 10000, // 10s timeout on establishing connection
-  greetingTimeout: 5000,    // 5s timeout on initial SMTP greeting
-  socketTimeout: 10000,     // 10s timeout on inactive socket
-});
-
-// Verify SMTP connection on server startup
-transporter.verify((error) => {
-  if (error) {
-    console.error('❌ Nodemailer SMTP Verification Error:', error.message);
-  } else {
-    console.log('✅ Nodemailer SMTP Transporter ready to dispatch emails');
-  }
-});
+// 🚀 Initialize Resend API client using Environment Variable
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
- * Helper: Generate & Dispatch 6-Digit OTP
+ * Helper: Generate & Dispatch 6-Digit OTP via Resend HTTP API
  */
 async function generateAndSendOTP(uid, email) {
   // 1. Generate 6-digit pin
@@ -53,9 +31,10 @@ async function generateAndSendOTP(uid, email) {
     attempts: 0,
   });
 
-  // 5. Send Branded Email
-  const mailOptions = {
-    from: `"AlertU System" <${process.env.EMAIL_USER}>`,
+  // 5. Send Branded Email via Resend HTTP API (Port 443 - Never blocked by cloud hosts)
+  // Note: While testing without a custom domain, use 'onboarding@resend.dev' as the sender.
+  const response = await resend.emails.send({
+    from: 'AlertU System <onboarding@resend.dev>',
     to: email,
     subject: 'Your AlertU Verification Code',
     html: `
@@ -68,9 +47,13 @@ async function generateAndSendOTP(uid, email) {
         <p style="color: #666; font-size: 13px;">This code will expire in <strong>10 minutes</strong>. Do not share this code with anyone.</p>
       </div>
     `,
-  };
+  });
 
-  await transporter.sendMail(mailOptions);
+  if (response.error) {
+    throw new Error(`Resend API Error: ${response.error.message}`);
+  }
+
+  console.log(`✅ OTP email successfully dispatched via Resend to ${email} (ID: ${response.data.id})`);
 }
 
 // =========================================================================
