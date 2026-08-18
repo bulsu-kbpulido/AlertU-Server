@@ -201,7 +201,7 @@ app.use('/api/auth', passwordForgotRoutes);
 app.use('/api/auth', superadpassForgotRoutes); 
 app.use('/api/auth', adminForgotPasswordRoutes); // Mounts /api/auth/send-admin-reset-otp & /api/auth/reset-admin-password
 
-// 📧 EMAIL VERIFICATION (Mounted under both /email-verification and / to ensure path matching)
+// 📧 EMAIL VERIFICATION ENGINES
 app.use('/api/email-verification', emailVerificationRoutes);
 app.use('/api', emailVerificationRoutes);
 
@@ -277,7 +277,7 @@ server.listen(PORT, '0.0.0.0', () => {
      • Forgot Password Engine (/api/auth/send-reset-otp, /api/auth/reset-password)
      • SuperAdmin Forgot Password Engine (/api/auth/send-superadmin-reset-otp, /api/auth/reset-superadmin-password)
      • Admin Forgot Password Engine (/api/auth/send-admin-reset-otp, /api/auth/reset-admin-password)
-     • Email Verification (/api/email-verification/send-otp, /api/send-otp)
+     • Email Verification (/api/email-verification/send-otp, /api/email-verification/verify-otp)
      • Admin Action Logger (/api/admin-actions/log)
      • Audit Log Cache & Limit Engine (/api/audit-logs)
      • Mobile Avatar Upload & Delete Engine (/api/citizens/upload-avatar, /api/citizens/avatar/delete)
@@ -307,7 +307,7 @@ server.listen(PORT, '0.0.0.0', () => {
      B2_APP_KEY: ${process.env.B2_APP_KEY || process.env.B2_APPLICATION_KEY ? '✅ SET' : '❌ MISSING'}
      B2_BUCKET_NAME: ${process.env.B2_BUCKET_NAME ? '✅ SET' : '⚠️ UNSET (Defaulting to "alertu-media-storage")'}
      B2_REGION: ${process.env.B2_REGION ? '✅ SET' : '⚠️ UNSET (Defaulting to "us-west-004")'}
-     METERED_API_KEY: ${process.env.METERED_API_KEY ? '✅ SET' : '❌ MISSING'}
+     RESEND_API_KEY: ${process.env.RESEND_API_KEY ? '✅ SET' : '❌ MISSING (Required for Email Verification)'}
      JWT_SECRET: ${process.env.JWT_SECRET ? '✅ SET' : '⚠️ UNSET (Using Fallback Hash)'}
   `);
 
