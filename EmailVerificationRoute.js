@@ -11,6 +11,7 @@ const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
   secure: true, // Enforce direct SSL/TLS to prevent socket timeouts
+  family: 4,    // 🚀 FORCES IPV4: Fixes Render ENETUNREACH IPv6 connection error
   auth: {
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS, // Requires 16-character Gmail App Password
@@ -69,9 +70,9 @@ async function generateAndSendOTP(uid, email) {
 }
 
 // =========================================================================
-// 1. Dispatch/Resend OTP Endpoint
+// 1. Dispatch/Resend OTP Endpoint (Handles both root and subpath matches)
 // =========================================================================
-router.post('/email-verification/send-otp', async (req, res) => {
+const handleSendOtp = async (req, res) => {
   try {
     const { uid, email } = req.body;
 
@@ -114,12 +115,16 @@ router.post('/email-verification/send-otp', async (req, res) => {
       error: error.message,
     });
   }
-});
+};
+
+// Listen on both `/send-otp` and `/email-verification/send-otp` to guarantee matching
+router.post('/send-otp', handleSendOtp);
+router.post('/email-verification/send-otp', handleSendOtp);
 
 // =========================================================================
-// 2. Verify OTP Endpoint
+// 2. Verify OTP Endpoint (Handles both root and subpath matches)
 // =========================================================================
-router.post('/email-verification/verify-otp', async (req, res) => {
+const handleVerifyOtp = async (req, res) => {
   try {
     const { uid, otp } = req.body;
 
@@ -186,6 +191,10 @@ router.post('/email-verification/verify-otp', async (req, res) => {
       error: error.message,
     });
   }
-});
+};
+
+// Listen on both `/verify-otp` and `/email-verification/verify-otp`
+router.post('/verify-otp', handleVerifyOtp);
+router.post('/email-verification/verify-otp', handleVerifyOtp);
 
 module.exports = router;
