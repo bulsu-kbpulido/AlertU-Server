@@ -1,47 +1,94 @@
 const express = require('express');
 const router = express.Router();
-const nodemailer = require('nodemailer');
-
-// 🔑 Import modular getAuth and getFirestore from firebase-admin
+const crypto = require('crypto');
+const { Resend } = require('resend');
 const { getAuth } = require('firebase-admin/auth');
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 const db = getFirestore();
-const otpStore = new Map();
 
-// 📧 Use explicit host, port 465, and secure: true
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, 
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
+// 🚀 Initialize Resend API client using Environment Variable
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Verify SMTP connection on server startup
-transporter.verify((error) => {
-  if (error) {
-    console.error('❌ Super Admin Password Reset SMTP Verification Error:', error.message);
-  } else {
-    console.log('✅ Super Admin Password Reset SMTP Transporter ready');
+/**
+ * Helper: Generate & Dispatch Super Admin Password Reset 6-Digit OTP via Resend
+ */
+async function generateAndSendSuperAdminResetOTP(uid, email) {
+  // 1. Generate 6-digit PIN
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+  // 2. Hash OTP using SHA-256 for secure DB storage
+  const hashedOtp = crypto.createHash('sha256').update(otp).digest('hex');
+
+  // 3. Set expiration time (10 minutes)
+  const expiresAt = Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000));
+
+  // 4. Record in Firestore 'superadmin_password_reset_otps' collection
+  await db.collection('superadmin_password_reset_otps').doc(uid).set({
+    hashedOtp,
+    email: email.toLowerCase(),
+    expiresAt,
+    createdAt: FieldValue.serverTimestamp(),
+    attempts: 0,
+  });
+
+  // 5. Send Branded Email via Resend HTTP API
+  const response = await resend.emails.send({
+    from: 'AlertU System <onboarding@resend.dev>',
+    to: email,
+    subject: 'AlertU Super Admin Password Reset Code',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
+        <h2 style="color: #0d47a1; text-align: center;">Super Admin Password Reset</h2>
+        <p style="color: #333;">You requested to reset your Super Admin account password. Use the verification code below to proceed:</p>
+        <div style="background-color: #f0f4f9; padding: 16px; border-radius: 8px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0d47a1; margin: 20px 0;">
+          ${otp}
+        </div>
+        <p style="color: #666; font-size: 13px;">This code will expire in <strong>10 minutes</strong>. If you did not request this, please secure your account immediately.</p>
+      </div>
+    `,
+  });
+
+  if (response.error) {
+    throw new Error(`Resend API Error: ${response.error.message}`);
   }
-});
 
-// 1. Send Super Admin Password Reset 6-Digit OTP
-router.post('/send-superadmin-reset-otp', async (req, res) => {
-  const { email } = req.body;
+  console.log(`✅ Super Admin password reset OTP email sent via Resend to ${email} (ID: ${response.data.id})`);
+}
 
-  if (!email) {
-    return res.status(400).json({ success: false, error: 'Email address is required' });
-  }
-
+// =========================================================================
+// 1. Dispatch/Send Super Admin Password Reset OTP Endpoint
+// =========================================================================
+const handleSendSuperAdminResetOtp = async (req, res) => {
   try {
-    // 💡 Get Firebase Auth user
-    const user = await getAuth().getUserByEmail(email);
+    const { email } = req.body;
 
-    // 💡 Verify target account exists in 'superadmin' Firestore collection
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email address is required.',
+        error: 'Email address is required'
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Fetch Firebase User record by Email
+    let user;
+    try {
+      user = await getAuth().getUserByEmail(cleanEmail);
+    } catch (authError) {
+      if (authError.code === 'auth/user-not-found') {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'No account found with this email address.',
+          error: 'No account found with this email'
+        });
+      }
+      throw authError;
+    }
+
+    // Verify target account exists in 'superadmin' Firestore collection
     let isSuperAdmin = false;
     const docSnap = await db.collection('superadmin').doc(user.uid).get();
 
@@ -55,78 +102,133 @@ router.post('/send-superadmin-reset-otp', async (req, res) => {
     }
 
     if (!isSuperAdmin) {
-      return res.status(403).json({ success: false, error: 'Access denied: Email address does not belong to a Super Admin account.' });
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied: Email address does not belong to a Super Admin account.',
+        error: 'Access denied: Email address does not belong to a Super Admin account.' 
+      });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10-minute validity
+    // Cooldown throttle check (60 seconds)
+    const existingDoc = await db.collection('superadmin_password_reset_otps').doc(user.uid).get();
+    if (existingDoc.exists) {
+      const data = existingDoc.data();
+      if (data && data.createdAt && typeof data.createdAt.toDate === 'function') {
+        const lastSent = data.createdAt.toDate().getTime();
+        if (Date.now() - lastSent < 60000) {
+          return res.status(429).json({
+            success: false,
+            message: 'Please wait 60 seconds before requesting another reset code.',
+            error: 'Please wait 60 seconds before requesting another reset code.'
+          });
+        }
+      }
+    }
 
-    otpStore.set(email.toLowerCase(), { otp, expiresAt, uid: user.uid });
+    await generateAndSendSuperAdminResetOTP(user.uid, cleanEmail);
 
-    const mailOptions = {
-      from: `"AlertU System" <${process.env.EMAIL_USER}>`,
-      to: email,
-      subject: 'AlertU Super Admin Password Reset Code',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #e0e0e0; border-radius: 12px; background-color: #ffffff;">
-          <h2 style="color: #0d47a1; text-align: center; margin-bottom: 8px;">Super Admin Password Reset</h2>
-          <p style="color: #4a5568; font-size: 14px; text-align: center;">You requested to reset your Super Admin account password. Use the verification code below to proceed:</p>
-          <div style="background-color: #f0f4f9; padding: 18px; border-radius: 10px; text-align: center; font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0d47a1; margin: 24px 0;">
-            ${otp}
-          </div>
-          <p style="color: #718096; font-size: 12px; text-align: center; margin: 0;">This code expires in 10 minutes. If you did not request this, please secure your account immediately.</p>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(mailOptions);
-    return res.status(200).json({ success: true, message: 'Verification code sent successfully' });
-
+    return res.status(200).json({
+      success: true,
+      message: 'Verification code sent successfully.',
+    });
   } catch (error) {
-    console.error('Error sending Super Admin reset OTP:', error);
-    if (error.code === 'auth/user-not-found') {
-      return res.status(404).json({ success: false, error: 'No account found with this email' });
-    }
-    return res.status(500).json({ success: false, error: 'Failed to send verification email' });
+    console.error('❌ Error sending Super Admin reset OTP:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to send verification email.',
+      error: 'Failed to send verification email'
+    });
   }
-});
+};
 
-// 2. Verify OTP & Update Firebase Password
-router.post('/reset-superadmin-password', async (req, res) => {
-  const { email, otp, newPassword } = req.body;
-
-  if (!email || !otp || !newPassword) {
-    return res.status(400).json({ success: false, error: 'All fields are required' });
-  }
-
-  const record = otpStore.get(email.toLowerCase());
-
-  if (!record) {
-    return res.status(400).json({ success: false, error: 'No active code request found for this email' });
-  }
-
-  if (Date.now() > record.expiresAt) {
-    otpStore.delete(email.toLowerCase());
-    return res.status(400).json({ success: false, error: 'Verification code has expired. Please request a new one.' });
-  }
-
-  if (record.otp !== otp.trim()) {
-    return res.status(400).json({ success: false, error: 'Invalid verification code' });
-  }
-
+// =========================================================================
+// 2. Verify OTP & Reset Firebase Super Admin Password Endpoint
+// =========================================================================
+const handleResetSuperAdminPassword = async (req, res) => {
   try {
-    // 💡 Update user password in Firebase Auth
-    await getAuth().updateUser(record.uid, {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'All fields are required.',
+        error: 'All fields are required'
+      });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Fetch Firebase User to locate UID
+    let user;
+    try {
+      user = await getAuth().getUserByEmail(cleanEmail);
+    } catch (authError) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'No account found with this email address.',
+        error: 'No active code request found for this email'
+      });
+    }
+
+    const docRef = db.collection('superadmin_password_reset_otps').doc(user.uid);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+      return res.status(400).json({
+        success: false,
+        message: 'No active code request found for this email.',
+        error: 'No active code request found for this email'
+      });
+    }
+
+    const data = docSnap.data();
+
+    // 1. Check expiration
+    if (data.expiresAt && Date.now() > data.expiresAt.toDate().getTime()) {
+      await docRef.delete();
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code has expired. Please request a new one.',
+        error: 'Verification code has expired. Please request a new one.'
+      });
+    }
+
+    // 2. Hash input OTP and compare
+    const inputHash = crypto.createHash('sha256').update(otp.toString().trim()).digest('hex');
+
+    if (inputHash !== data.hashedOtp) {
+      await docRef.update({ attempts: FieldValue.increment(1) });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verification code.',
+        error: 'Invalid verification code'
+      });
+    }
+
+    // 3. Update Password in Firebase Authentication
+    await getAuth().updateUser(user.uid, {
       password: newPassword,
     });
 
-    otpStore.delete(email.toLowerCase());
+    // 4. Clean up OTP document from Firestore
+    await docRef.delete();
 
-    return res.status(200).json({ success: true, message: 'Password updated successfully' });
+    return res.status(200).json({
+      success: true,
+      message: 'Password updated successfully',
+    });
   } catch (error) {
-    console.error('Super Admin password reset update error:', error);
-    return res.status(500).json({ success: false, error: 'Failed to update password' });
+    console.error('❌ Error resetting Super Admin password:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to update password.',
+      error: 'Failed to update password'
+    });
   }
-});
+};
+
+// Route definitions
+router.post('/send-superadmin-reset-otp', handleSendSuperAdminResetOtp);
+router.post('/reset-superadmin-password', handleResetSuperAdminPassword);
 
 module.exports = router;
