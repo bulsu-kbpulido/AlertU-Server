@@ -195,7 +195,11 @@ app.use('/api', movementDetectorRoutes);
 app.use('/api/auth', passwordForgotRoutes); 
 app.use('/api/auth', superadpassForgotRoutes); 
 app.use('/api/auth', adminForgotPasswordRoutes); // Mounts /api/auth/send-admin-reset-otp & /api/auth/reset-admin-password
+
+// 📧 EMAIL VERIFICATION (Mount explicitly under /email-verification and / so both /send-otp routes match)
+app.use('/api/email-verification', emailVerificationRoutes);
 app.use('/api', emailVerificationRoutes);
+
 app.use('/api', citizenListener);
 app.use('/api', linkRoutes);          
 app.use('/api', agoraRoutes);         
@@ -268,7 +272,7 @@ server.listen(PORT, '0.0.0.0', () => {
      • Forgot Password Engine (/api/auth/send-reset-otp, /api/auth/reset-password)
      • SuperAdmin Forgot Password Engine (/api/auth/send-superadmin-reset-otp, /api/auth/reset-superadmin-password)
      • Admin Forgot Password Engine (/api/auth/send-admin-reset-otp, /api/auth/reset-admin-password)
-     • Email Verification (/api/...)
+     • Email Verification (/api/email-verification/send-otp, /api/send-otp)
      • Admin Action Logger (/api/admin-actions/log)
      • Audit Log Cache & Limit Engine (/api/audit-logs)
      • Mobile Avatar Upload & Delete Engine (/api/citizens/upload-avatar, /api/citizens/avatar/delete)
@@ -302,7 +306,7 @@ server.listen(PORT, '0.0.0.0', () => {
      JWT_SECRET: ${process.env.JWT_SECRET ? '✅ SET' : '⚠️ UNSET (Using Fallback Hash)'}
   `);
 
-  // MODIFICATION 1: Skip Bonjour broadcasting in cloud/production environments like Render
+  // Skip Bonjour broadcasting in cloud/production environments like Render
   if (process.env.NODE_ENV !== 'production' && !process.env.RENDER) {
     try {
       const bonjour = new Bonjour();
@@ -354,7 +358,7 @@ app.use((req, res) => {
 });
 
 // ==========================================
-// MODIFICATION 2: Graceful Shutdown Signal Handlers (Render Lifecycle)
+// Graceful Shutdown Signal Handlers (Render Lifecycle)
 // ==========================================
 const handleShutdown = (signal) => {
   console.log(`\n⚠️ Received ${signal}. Initiating graceful shutdown...`);
