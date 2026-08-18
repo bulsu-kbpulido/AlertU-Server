@@ -7,15 +7,19 @@ const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestor
 const db = getFirestore();
 
 // 📧 Configure Explicit Nodemailer Transporter
+// 🚀 Switched to Port 587 with STARTTLS + explicit connection timeouts to prevent Render hanging
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // Enforce direct SSL/TLS to prevent socket timeouts
-  family: 4,    // 🚀 FORCES IPV4: Fixes Render ENETUNREACH IPv6 connection error
+  port: 587,
+  secure: false, // Must be false for port 587 (uses STARTTLS)
+  family: 4,    // 🚀 FORCES IPV4: Prevents Render ENETUNREACH IPv6 connection errors
   auth: {
     user: process.env.EMAIL_USER, 
     pass: process.env.EMAIL_PASS, // Requires 16-character Gmail App Password
   },
+  connectionTimeout: 10000, // 10s timeout on establishing connection
+  greetingTimeout: 5000,    // 5s timeout on initial SMTP greeting
+  socketTimeout: 10000,     // 10s timeout on inactive socket
 });
 
 // Verify SMTP connection on server startup
