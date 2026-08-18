@@ -7,13 +7,13 @@ const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestor
 
 const db = getFirestore();
 
-// 🚀 Initialize Resend API client using Environment Variable
+// 🚀 Initialize Resend API client
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
  * Helper: Generate & Dispatch Admin Password Reset 6-Digit OTP via Resend
  */
-async function generateAndSendAdminResetOTP(uid, email) {
+async function generateAndSendAdminResetOTP(uid, targetEmail) {
   // 1. Generate 6-digit PIN
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -26,16 +26,21 @@ async function generateAndSendAdminResetOTP(uid, email) {
   // 4. Record in Firestore 'admin_password_reset_otps' collection
   await db.collection('admin_password_reset_otps').doc(uid).set({
     hashedOtp,
-    email: email.toLowerCase(),
+    email: targetEmail.toLowerCase(),
     expiresAt,
     createdAt: FieldValue.serverTimestamp(),
     attempts: 0,
   });
 
-  // 5. Send Branded Admin Email via Resend HTTP API
-  const response = await resend.emails.send({
+  // 5. Determine recipient address:
+  // Note: On Resend Free Tier, sending from 'onboarding@resend.dev' ONLY works when 'to' is set
+  // to your own Resend account email. Override via RESEND_TEST_EMAIL if needed during dev.
+  const recipientEmail = process.env.RESEND_TEST_EMAIL || targetEmail;
+
+  // 6. Send Branded Admin Email via Resend HTTP API
+  const { data, error } = await resend.emails.send({
     from: 'AlertU System <onboarding@resend.dev>',
-    to: email,
+    to: recipientEmail,
     subject: 'AlertU Admin Password Reset Code',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
@@ -49,11 +54,12 @@ async function generateAndSendAdminResetOTP(uid, email) {
     `,
   });
 
-  if (response.error) {
-    throw new Error(`Resend API Error: ${response.error.message}`);
+  if (error) {
+    console.error('❌ Resend Delivery Error Details:', error);
+    throw new Error(`Resend API Error: ${error.message}`);
   }
 
-  console.log(`✅ Admin password reset OTP email sent via Resend to ${email} (ID: ${response.data.id})`);
+  console.log(`✅ Admin password reset OTP email sent via Resend to ${recipientEmail} (ID: ${data.id})`);
 }
 
 // =========================================================================
@@ -88,16 +94,20 @@ const handleSendAdminResetOtp = async (req, res) => {
       throw authError;
     }
 
-    // 💡 Verify target account belongs to an Admin in Firestore
+    // 💡 Robust Admin Role Check
     let isAdmin = false;
-    const docSnap = await db.collection('admins').doc(user.uid).get();
 
+    // Check 1: Direct Doc ID Match
+    const docSnap = await db.collection('admins').doc(user.uid).get();
     if (docSnap.exists) {
       isAdmin = true;
     } else {
-      const querySnap = await db.collection('admins').where('uid', '==', user.uid).limit(1).get();
-      if (!querySnap.empty) {
-        isAdmin = true;
+      // Check 2: Safe field search (wrapped in try/catch to catch unindexed query crashes)
+      try {
+        const querySnap = await db.collection('admins').where('uid', '==', user.uid).limit(1).get();
+        if (!querySnap.empty) isAdmin = true;
+      } catch (dbErr) {
+        console.warn('⚠️ Admin UID query warning:', dbErr.message);
       }
     }
 
@@ -135,8 +145,8 @@ const handleSendAdminResetOtp = async (req, res) => {
     console.error('❌ Error sending Admin reset OTP:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to send verification email.',
-      error: 'Failed to send verification email'
+      message: error.message || 'Failed to send verification email.',
+      error: error.message || 'Failed to send verification email'
     });
   }
 };
@@ -221,8 +231,8 @@ const handleResetAdminPassword = async (req, res) => {
     console.error('❌ Error resetting Admin password:', error);
     return res.status(500).json({
       success: false,
-      message: 'Failed to update password.',
-      error: 'Failed to update password'
+      message: error.message || 'Failed to update password.',
+      error: error.message || 'Failed to update password'
     });
   }
 };
