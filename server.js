@@ -1,4 +1,9 @@
 require('dotenv').config();
+
+// 🚀 Enforce IPv4 DNS resolution globally to resolve Render IPv6 ENETUNREACH issues
+const dns = require('dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const express = require('express');
 const http = require('http'); // Native HTTP module
 const cors = require('cors');
@@ -196,7 +201,7 @@ app.use('/api/auth', passwordForgotRoutes);
 app.use('/api/auth', superadpassForgotRoutes); 
 app.use('/api/auth', adminForgotPasswordRoutes); // Mounts /api/auth/send-admin-reset-otp & /api/auth/reset-admin-password
 
-// 📧 EMAIL VERIFICATION (Mount explicitly under /email-verification and / so both /send-otp routes match)
+// 📧 EMAIL VERIFICATION (Mounted under both /email-verification and / to ensure path matching)
 app.use('/api/email-verification', emailVerificationRoutes);
 app.use('/api', emailVerificationRoutes);
 
