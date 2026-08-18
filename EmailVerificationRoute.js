@@ -10,7 +10,7 @@ const db = getFirestore();
 // 🚀 Switched to Port 587 with STARTTLS + explicit connection timeouts to prevent Render hanging
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 587,
+  port: 2525,
   secure: false, // Must be false for port 587 (uses STARTTLS)
   family: 4,    // 🚀 FORCES IPV4: Prevents Render ENETUNREACH IPv6 connection errors
   auth: {
