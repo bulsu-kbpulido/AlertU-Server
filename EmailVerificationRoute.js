@@ -57,7 +57,7 @@ async function generateAndSendOTP(uid, email) {
 }
 
 // =========================================================================
-// 1. Dispatch/Resend OTP Endpoint (Handles both root and subpath matches)
+// 1. Dispatch/Resend OTP Endpoint
 // =========================================================================
 const handleSendOtp = async (req, res) => {
   try {
@@ -104,12 +104,8 @@ const handleSendOtp = async (req, res) => {
   }
 };
 
-// Listen on both `/send-otp` and `/email-verification/send-otp` to guarantee matching
-router.post('/send-otp', handleSendOtp);
-router.post('/email-verification/send-otp', handleSendOtp);
-
 // =========================================================================
-// 2. Verify OTP Endpoint (Handles both root and subpath matches)
+// 2. Verify OTP Endpoint
 // =========================================================================
 const handleVerifyOtp = async (req, res) => {
   try {
@@ -180,8 +176,8 @@ const handleVerifyOtp = async (req, res) => {
   }
 };
 
-// Listen on both `/verify-otp` and `/email-verification/verify-otp`
+// Clean relative route definitions
+router.post('/send-otp', handleSendOtp);
 router.post('/verify-otp', handleVerifyOtp);
-router.post('/email-verification/verify-otp', handleVerifyOtp);
 
 module.exports = router;
