@@ -7,6 +7,16 @@ const socketInit = require('./socket'); // Socket engine reference
 // 🖼️ DEFAULT AVATAR CONSTANT
 const DEFAULT_AVATAR_URL = 'https://ui-avatars.com/api/?background=0D8ABC&color=fff&name=Citizen';
 
+// 🧠 SERVER-SIDE MEMORY CACHE ENGINE
+let citizensMemoryCache = null;
+let lastCacheTime = 0;
+const CACHE_TTL_MS = 60 * 1000; // 1 Minute Cache TTL
+
+const invalidateMemoryCache = () => {
+    citizensMemoryCache = null;
+    lastCacheTime = 0;
+};
+
 // ==========================================
 // 🔒 FIREBASE AUTHENTICATION MIDDLEWARE
 // ==========================================
@@ -122,7 +132,7 @@ const resolveCitizenDoc = async (db, idOrCitizenID) => {
 // 📡 ROUTE HANDLERS
 // ==========================================
 
-// 1. SPECIFIC / STATIC SUB-ROUTES FIRST (Prevents wildcard collision)
+// 1. SPECIFIC / STATIC SUB-ROUTES FIRST
 
 // 📱 REGISTER FCM TOKEN
 router.post('/register-fcm-token', async (req, res) => {
@@ -141,6 +151,7 @@ router.post('/register-fcm-token', async (req, res) => {
       updatedAt: FieldValue.serverTimestamp()
     }, { merge: true });
 
+    invalidateMemoryCache();
     return res.status(200).json({ success: true, message: 'FCM token registered successfully' });
   } catch (error) {
     console.error('❌ FCM Token Registration Error:', error.message);
@@ -183,6 +194,8 @@ router.delete('/delete-avatar', async (req, res) => {
             console.warn(`Auth photoURL update skipped for UID ${uid}:`, authErr.message);
         }
 
+        invalidateMemoryCache();
+
         try {
             const io = socketInit.getIO();
             const payload = { id: doc.id, avatar: fallbackAvatar };
@@ -203,11 +216,25 @@ router.delete('/delete-avatar', async (req, res) => {
     }
 });
 
-// 📡 READ ALL CITIZENS
+// 📡 READ ALL CITIZENS (With Smart Fallback Cache)
 router.get('/', async (req, res) => {
     try {
         const db = getFirestore();
-        const snapshot = await db.collection('citizens').get();
+        const now = Date.now();
+        const forceRefresh = req.query._t || req.query.forceHydrate === 'true';
+
+        let rawDocs = [];
+
+        if (!forceRefresh && citizensMemoryCache && (now - lastCacheTime) < CACHE_TTL_MS) {
+            rawDocs = citizensMemoryCache;
+        } else {
+            const limitVal = parseInt(req.query.queryLimit, 10) || 100;
+            const snapshot = await db.collection('citizens').limit(limitVal).get();
+            rawDocs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            
+            citizensMemoryCache = rawDocs;
+            lastCacheTime = now;
+        }
 
         let activeSocketUidsSet = new Set();
         try {
@@ -215,22 +242,22 @@ router.get('/', async (req, res) => {
             activeSocketUidsSet = getActiveSocketUidsSet(io);
         } catch (e) {}
         
-        const citizensList = snapshot.docs.map(doc => {
-            const data = doc.data();
-            const targetUid = data.authUid || doc.id;
-            const isOnline = checkUserOnlineStatus(targetUid, doc.id, data.isActive, activeSocketUidsSet);
+        const citizensList = rawDocs.map(data => {
+            const docId = data.id;
+            const targetUid = data.authUid || docId;
+            const isOnline = checkUserOnlineStatus(targetUid, docId, data.isActive, activeSocketUidsSet);
 
             const formattedCitizenID = 
                 data.citizenID || 
                 data.citizenId || 
-                (doc.id.startsWith('CID') ? doc.id : 'CID00000000');
+                (docId.startsWith('CID') ? docId : 'CID00000000');
 
             const userAvatar = data.avatar || data.photoURL || `https://ui-avatars.com/api/?background=0D8ABC&color=fff&name=${encodeURIComponent(data.fullName || 'Citizen')}`;
 
             return {
-                id: doc.id, 
+                id: docId, 
                 citizenID: formattedCitizenID,
-                authUid: data.authUid || doc.id,
+                authUid: data.authUid || docId,
                 fullName: data.fullName || 'No Name Provided',
                 email: data.email || 'N/A',
                 avatar: userAvatar,
@@ -245,7 +272,7 @@ router.get('/', async (req, res) => {
                 createdBy: data.createdBy || 'System Admin',
                 createdAt: data.createdAt && typeof data.createdAt.toDate === 'function' 
                     ? data.createdAt.toDate() 
-                    : null
+                    : data.createdAt || null
             };
         });
 
@@ -255,6 +282,12 @@ router.get('/', async (req, res) => {
         return res.json(citizensList);
     } catch (err) {
         console.error("Error fetching citizens from Firestore:", err);
+
+        // Fallback: Return cached records if query failed
+        if (citizensMemoryCache) {
+            return res.json(citizensMemoryCache);
+        }
+
         return res.status(500).json({ error: err.message });
     }
 });
@@ -305,6 +338,7 @@ router.post('/', async (req, res) => {
         };
 
         await db.collection('citizens').doc(documentId).set(citizenData);
+        invalidateMemoryCache();
 
         try {
             const io = socketInit.getIO();
@@ -329,7 +363,7 @@ router.post('/', async (req, res) => {
     }
 });
 
-// 2. PARAMETERIZED SUB-ROUTES (Must come last)
+// 2. PARAMETERIZED SUB-ROUTES
 
 // ✉️ DISPATCH EMAIL VERIFICATION LINK
 router.post('/:uid/send-verification-email', async (req, res) => {
@@ -367,6 +401,8 @@ router.post('/:uid/send-verification-email', async (req, res) => {
             emailVerificationSentAt: FieldValue.serverTimestamp(),
             updatedBy: req.user?.email || req.user?.uid || 'User'
         }, { merge: true });
+
+        invalidateMemoryCache();
 
         return res.json({
             success: true,
@@ -412,6 +448,8 @@ router.delete('/:id/avatar', async (req, res) => {
                 console.warn(`Auth photoURL reset skipped for ${targetAuthUid}:`, authErr.message);
             }
         }
+
+        invalidateMemoryCache();
 
         return res.json({ 
             success: true, 
@@ -504,6 +542,7 @@ router.put('/:id', async (req, res) => {
         }
 
         await docRef.update(firestoreUpdate);
+        invalidateMemoryCache();
 
         try {
             const io = socketInit.getIO();
@@ -574,6 +613,7 @@ router.patch('/:id/status', async (req, res) => {
         };
 
         await docRef.update(updatePayload);
+        invalidateMemoryCache();
 
         const isOnline = checkUserOnlineStatus(targetAuthUid, doc.id, citizenData.isActive);
 
@@ -659,6 +699,7 @@ router.post('/:id/archive', async (req, res) => {
         batch.delete(citizenRef);
 
         await batch.commit();
+        invalidateMemoryCache();
 
         try {
             const io = socketInit.getIO();
@@ -710,6 +751,8 @@ router.delete('/:id', async (req, res) => {
                 console.warn(`Auth user delete skipped for UID ${targetAuthUid}:`, authErr.message);
             }
         }
+
+        invalidateMemoryCache();
 
         try {
             const io = socketInit.getIO();
