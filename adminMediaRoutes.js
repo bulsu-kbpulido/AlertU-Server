@@ -12,10 +12,13 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const { verifyToken } = require('./authMiddleware');
 const multer = require('multer');
 
-// Constants
-const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
-const BUCKET_NAME = "alertu-media-storage";
+// -----------------------------------------------------------------------------
+// ENVIRONMENT & CONFIGURATION
+// -----------------------------------------------------------------------------
+const BUCKET_NAME = process.env.B2_BUCKET_NAME || "alertu-media-storage";
 const ADMIN_MEDIA_PREFIX = "admin-reports";
+const BASE_URL = process.env.BASE_URL || "https://alertu-server.onrender.com";
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 const ALLOWED_MIME_TYPES = ['video/mp4', 'image/png', 'image/jpeg', 'image/webp'];
 
 // Multer Setup (In-Memory Buffer Storage)
@@ -30,13 +33,13 @@ const upload = multer({
   }
 });
 
-// Backblaze B2 S3 Client Initialization
+// Backblaze B2 S3 Client Initialization (Aligned with mediaRoutes.js fallback environment keys)
 const s3 = new S3Client({
-  region: "us-west-004",
-  endpoint: "https://s3.us-west-004.backblazeb2.com",
+  region: process.env.B2_REGION || "us-west-004",
+  endpoint: process.env.B2_ENDPOINT || "https://s3.us-west-004.backblazeb2.com",
   credentials: {
-    accessKeyId: process.env.B2_KEY_ID?.trim() || "",
-    secretAccessKey: process.env.B2_APP_KEY?.trim() || "",
+    accessKeyId: (process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID || "").trim(),
+    secretAccessKey: (process.env.B2_APP_KEY || process.env.B2_APPLICATION_KEY || "").trim(),
   },
 });
 
@@ -52,7 +55,7 @@ router.post('/upload', verifyToken, upload.single('file'), async (req, res) => {
     const { reportId } = req.body;
     const { file } = req;
 
-    // Sanitize filename to prevent S3 key encoding bugs
+    // Sanitize filename to prevent S3 key encoding issues
     const sanitizedFilename = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     const folder = reportId || `temp-${Date.now()}`;
     const uniqueStoragePath = `${ADMIN_MEDIA_PREFIX}/${folder}/${Date.now()}_${sanitizedFilename}`;
@@ -66,15 +69,13 @@ router.post('/upload', verifyToken, upload.single('file'), async (req, res) => {
 
     await s3.send(putCommand);
 
-    // Dynamically resolve host and protocol
-    const host = req.get('host');
-    const protocol = req.protocol;
-    const permanentStreamUrl = `${protocol}://${host}/api/dispatch-media/stream?storagePath=${encodeURIComponent(uniqueStoragePath)}`;
+    // Standardized to absolute production URL (BASE_URL) consistent with mediaRoutes.js
+    const permanentStreamUrl = `${BASE_URL}/api/dispatch-media/stream?storagePath=${encodeURIComponent(uniqueStoragePath)}`;
 
     return res.status(200).json({
       success: true,
-      storagePath: uniqueStoragePath, // Store this in DB
-      fileUrl: permanentStreamUrl     // Fully-qualified proxy stream URL saved to DB
+      storagePath: uniqueStoragePath,
+      fileUrl: permanentStreamUrl
     });
   } catch (error) {
     console.error('❌ Upload Error:', error.message);
@@ -93,8 +94,11 @@ router.get('/stream', async (req, res) => {
       return res.status(400).json({ success: false, error: 'storagePath query parameter is required' });
     }
 
+    // Decode and normalize storage path safely
+    const cleanStoragePath = decodeURIComponent(storagePath).replace(/^\/+/, '');
+
     // Path traversal security check: Ensure key originates from allowed prefixes
-    if (!storagePath.startsWith(`${ADMIN_MEDIA_PREFIX}/`) && !storagePath.startsWith('incidents/')) {
+    if (!cleanStoragePath.startsWith(`${ADMIN_MEDIA_PREFIX}/`) && !cleanStoragePath.startsWith('incidents/')) {
       return res.status(403).json({ success: false, error: 'Access denied to requested path' });
     }
 
@@ -103,11 +107,16 @@ router.get('/stream', async (req, res) => {
 
     const command = new GetObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: storagePath,
+      Key: cleanStoragePath,
       ...(rangeHeader && { Range: rangeHeader })
     });
 
     const s3Response = await s3.send(command);
+
+    // Standard CORS headers for cross-origin browser media playback
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 
     // Forward crucial HTTP headers for streaming and inline browser rendering
     if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
@@ -116,19 +125,27 @@ router.get('/stream', async (req, res) => {
     if (s3Response.AcceptRanges) res.setHeader('Accept-Ranges', s3Response.AcceptRanges);
 
     res.setHeader('Content-Disposition', 'inline');
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); // Aggressive client-side caching
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
     // Return 206 Partial Content if seeking/range request, otherwise 200
     res.status(rangeHeader ? 206 : 200);
 
-    // Pipe stream with error handling
-    s3Response.Body.pipe(res);
-    s3Response.Body.on('error', (streamErr) => {
-      console.error('❌ Stream Pipe Error:', streamErr.message);
-      if (!res.headersSent) {
-        res.status(500).end();
-      }
-    });
+    // Robust stream handling (handles Node stream pipe and AWS SDK v3 event streams)
+    if (s3Response.Body && typeof s3Response.Body.pipe === 'function') {
+      s3Response.Body.pipe(res);
+      s3Response.Body.on('error', (err) => {
+        console.error('❌ Stream Pipe Error:', err.message);
+        if (!res.headersSent) res.status(500).end();
+      });
+    } else if (s3Response.Body) {
+      const stream = s3Response.Body;
+      stream.on('data', (chunk) => res.write(chunk));
+      stream.on('end', () => res.end());
+      stream.on('error', (err) => {
+        console.error('❌ Stream Error:', err.message);
+        if (!res.headersSent) res.status(500).end();
+      });
+    }
   } catch (error) {
     console.error('❌ Media Stream Error:', error.message);
     return res.status(404).json({ success: false, error: 'Media file not found or inaccessible' });
@@ -146,9 +163,11 @@ router.get('/url', verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'storagePath query parameter is required' });
     }
 
+    const cleanStoragePath = decodeURIComponent(storagePath).replace(/^\/+/, '');
+
     const getCommand = new GetObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: storagePath,
+      Key: cleanStoragePath,
       ResponseContentDisposition: 'inline',
       ...(mimeType && { ResponseContentType: mimeType })
     });
@@ -176,9 +195,11 @@ router.get('/verify', verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'storagePath query parameter is required' });
     }
 
+    const cleanStoragePath = decodeURIComponent(storagePath).replace(/^\/+/, '');
+
     const headCommand = new HeadObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: storagePath,
+      Key: cleanStoragePath,
     });
 
     const metadata = await s3.send(headCommand);
@@ -210,9 +231,11 @@ router.delete('/delete', verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'storagePath body parameter is required' });
     }
 
+    const cleanStoragePath = decodeURIComponent(storagePath).replace(/^\/+/, '');
+
     const deleteCommand = new DeleteObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: storagePath,
+      Key: cleanStoragePath,
     });
 
     await s3.send(deleteCommand);
