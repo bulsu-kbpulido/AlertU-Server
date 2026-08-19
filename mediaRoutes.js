@@ -8,12 +8,10 @@ const {
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-// Environment configurations
 const BUCKET_NAME = process.env.B2_BUCKET_NAME || "alertu-media-storage";
 const INCIDENTS_PREFIX = "incidents";
 const BASE_URL = process.env.BASE_URL || "https://alertu-server.onrender.com";
 
-// Initialize Backblaze B2 S3 Client
 const s3 = new S3Client({
   region: process.env.B2_REGION || "us-west-004", 
   endpoint: process.env.B2_ENDPOINT || "https://s3.us-west-004.backblazeb2.com", 
@@ -30,33 +28,27 @@ router.post('/get-upload-url', async (req, res) => {
   try {
     let { fileType, fileName } = req.body; 
     
-    // Default fallback if MIME type isn't specified
     if (!fileType || fileType === 'blob') {
       fileType = 'application/octet-stream';
     }
 
-    // Determine extension or fallback
     let extension = 'jpg';
     if (fileType.includes('video')) extension = 'mp4';
     if (fileType.includes('audio')) extension = 'aac';
 
-    // Sanitize user filename or fall back to timestamp
     let rawName = fileName || `${Date.now()}.${extension}`;
     const sanitizedFilename = rawName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
     
     const uniqueStoragePath = `${INCIDENTS_PREFIX}/${Date.now()}_${sanitizedFilename}`;
 
-    // Presigned PutObject Command
     const putCommand = new PutObjectCommand({
       Bucket: BUCKET_NAME, 
       Key: uniqueStoragePath,
-      ContentType: fileType, // Client MUST send this exact Content-Type on PUT request
+      ContentType: fileType,
     });
 
-    // Generate 5-minute presigned upload link for Backblaze B2
     const uploadUrl = await getSignedUrl(s3, putCommand, { expiresIn: 300 });
 
-    // Build absolute production URL using process.env.BASE_URL
     const permanentStreamUrl = `${BASE_URL}/api/media/stream?storagePath=${encodeURIComponent(uniqueStoragePath)}`;
 
     return res.status(200).json({
@@ -64,7 +56,7 @@ router.post('/get-upload-url', async (req, res) => {
       uploadUrl: uploadUrl,
       storagePath: uniqueStoragePath,
       fileUrl: permanentStreamUrl,
-      requiredContentType: fileType // Send back to client to guarantee header match
+      requiredContentType: fileType
     });
   } catch (error) {
     console.error("❌ Presigned URL Generation Error:", error.message);
@@ -74,21 +66,23 @@ router.post('/get-upload-url', async (req, res) => {
 
 // -----------------------------------------------------------------------------
 // 2. PERMANENT PROXY STREAM ROUTE
-// Mounted at /api/media in server.js -> Listening on GET /api/media/stream
 // -----------------------------------------------------------------------------
 router.get('/stream', async (req, res) => {
   try {
-    const { storagePath } = req.query;
+    let { storagePath } = req.query;
 
     if (!storagePath) {
       return res.status(400).json({ success: false, error: 'storagePath query parameter is required' });
     }
 
+    // Decode and normalize storage path safely
+    const cleanStoragePath = decodeURIComponent(storagePath).replace(/^\/+/, '');
+
     const rangeHeader = req.headers.range;
 
     const command = new GetObjectCommand({
       Bucket: BUCKET_NAME,
-      Key: storagePath,
+      Key: cleanStoragePath,
       ...(rangeHeader && { Range: rangeHeader })
     });
 
@@ -99,7 +93,6 @@ router.get('/stream', async (req, res) => {
     res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type');
     res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 
-    // Forward streaming headers from Backblaze
     if (s3Response.ContentType) res.setHeader('Content-Type', s3Response.ContentType);
     if (s3Response.ContentLength) res.setHeader('Content-Length', s3Response.ContentLength);
     if (s3Response.ContentRange) res.setHeader('Content-Range', s3Response.ContentRange);
@@ -108,20 +101,22 @@ router.get('/stream', async (req, res) => {
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
-    // Set 206 Partial Content if client requested byte range (for seeking videos)
     res.status(rangeHeader ? 206 : 200);
 
-    // Pipe stream directly to Express response
-    if (typeof s3Response.Body.pipe === 'function') {
+    // Stream directly to response
+    if (s3Response.Body && typeof s3Response.Body.pipe === 'function') {
       s3Response.Body.pipe(res);
-    } else {
-      // Fallback for web stream objects
+      s3Response.Body.on('error', (err) => {
+        console.error('❌ Stream Pipe Error:', err.message);
+        if (!res.headersSent) res.status(500).end();
+      });
+    } else if (s3Response.Body) {
       const stream = s3Response.Body;
       stream.on('data', (chunk) => res.write(chunk));
       stream.on('end', () => res.end());
       stream.on('error', (err) => {
         console.error('❌ Stream Error:', err.message);
-        res.end();
+        if (!res.headersSent) res.status(500).end();
       });
     }
   } catch (error) {
