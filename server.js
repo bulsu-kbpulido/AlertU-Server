@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-// 🚀 Enforce IPv4 DNS resolution globally to resolve Render IPv6 ENETUNREACH issues
+// 🚀 Prefer IPv4 DNS resolution for reliable cloud connectivity
 const dns = require('dns');
 dns.setDefaultResultOrder('ipv4first');
 
@@ -316,7 +316,7 @@ server.listen(PORT, '0.0.0.0', () => {
   `);
 
   // Skip Bonjour broadcasting in cloud/production environments like Render
-  if (process.env.NODE_ENV !== 'production' && !process.env.RENDER) {
+  if (process.env.NODE_ENV !== 'production') {
     try {
       const bonjour = new Bonjour();
       bonjour.publish({ 

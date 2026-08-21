@@ -10,7 +10,7 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const BUCKET_NAME = process.env.B2_BUCKET_NAME || "alertu-media-storage";
 const INCIDENTS_PREFIX = "incidents";
-const BASE_URL = process.env.BASE_URL || "https://alertu-server.onrender.com";
+const BASE_URL = process.env.BASE_URL || "https://alertu-server-production.up.railway.app";
 
 const s3 = new S3Client({
   region: process.env.B2_REGION || "us-west-004", 

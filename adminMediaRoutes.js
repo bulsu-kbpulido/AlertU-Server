@@ -17,7 +17,7 @@ const multer = require('multer');
 // -----------------------------------------------------------------------------
 const BUCKET_NAME = process.env.B2_BUCKET_NAME || "alertu-media-storage";
 const ADMIN_MEDIA_PREFIX = "admin-reports";
-const BASE_URL = process.env.BASE_URL || "https://alertu-server.onrender.com";
+const BASE_URL = process.env.BASE_URL || "https://alertu-server-production.up.railway.app";
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
 const ALLOWED_MIME_TYPES = ['video/mp4', 'image/png', 'image/jpeg', 'image/webp'];
 
