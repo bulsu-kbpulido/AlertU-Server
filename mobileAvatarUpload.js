@@ -13,6 +13,18 @@ const REGION = process.env.B2_REGION || "us-west-004";
 const ENDPOINT = process.env.B2_ENDPOINT || `https://s3.${REGION}.backblazeb2.com`;
 
 // Initialize Backblaze B2 S3 Client
+async function resolveCitizenRef(db, uid) {
+  const directRef = db.collection('citizens').doc(uid);
+  const directDoc = await directRef.get();
+  if (directDoc.exists) return directRef;
+
+  const snapshot = await db.collection('citizens')
+    .where('authUid', '==', uid)
+    .limit(1)
+    .get();
+  return snapshot.empty ? directRef : snapshot.docs[0].ref;
+}
+
 const s3Client = new S3Client({
   region: REGION,
   endpoint: ENDPOINT,
@@ -120,7 +132,7 @@ router.post('/upload-avatar', handleUpload, async (req, res) => {
 
     // 6. Update Firestore Document (citizens collection)
     const db = getFirestore();
-    const citizenRef = db.collection('citizens').doc(uid);
+    const citizenRef = await resolveCitizenRef(db, uid);
 
     await citizenRef.set(
       {
@@ -181,7 +193,7 @@ router.delete(['/avatar/delete', '/delete-avatar'], async (req, res) => {
     const uid = decodedToken.uid;
 
     const db = getFirestore();
-    const citizenRef = db.collection('citizens').doc(uid);
+    const citizenRef = await resolveCitizenRef(db, uid);
     const citizenDoc = await citizenRef.get();
 
     // Default UI avatar fallback URL
