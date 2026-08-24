@@ -510,15 +510,23 @@ router.put('/:id', async (req, res) => {
         }
 
         const citizenData = doc.data();
-        const targetAuthUid = citizenData.authUid || doc.id;
+        const targetAuthUid = citizenData.authUid || citizenData.uid || doc.id;
+        const requesterUid = req.user?.uid;
+        const isPrivileged = req.user?.admin === true || req.user?.role === 'admin' || req.user?.role === 'superadmin';
+
+        if (requesterUid !== targetAuthUid && !isPrivileged) {
+            return res.status(403).json({ error: 'You may only update your own profile.' });
+        }
 
         if (targetAuthUid) {
             const authUpdate = {};
-            if (email) authUpdate.email = email;
-            if (fullName) authUpdate.displayName = fullName;
+            // A self-service email change is initiated in Flutter with
+            // verifyBeforeUpdateEmail; do not overwrite it here.
+            if (isPrivileged && email) authUpdate.email = String(email).trim().toLowerCase();
+            if (fullName !== undefined) authUpdate.displayName = String(fullName).trim();
             if (avatar) authUpdate.photoURL = avatar;
-            if (password && password.length >= 6) authUpdate.password = password;
-            if (typeof isDisabled === 'boolean') authUpdate.disabled = isDisabled;
+            if (isPrivileged && password && password.length >= 6) authUpdate.password = password;
+            if (typeof isDisabled === 'boolean' && isPrivileged) authUpdate.disabled = isDisabled;
 
             if (Object.keys(authUpdate).length > 0) {
                 await auth.updateUser(targetAuthUid, authUpdate);
@@ -530,11 +538,15 @@ router.put('/:id', async (req, res) => {
             updatedBy: req.user?.email || req.user?.uid || 'Admin'
         };
 
-        if (email !== undefined) firestoreUpdate.email = email;
+        if (isPrivileged && email !== undefined) firestoreUpdate.email = String(email).trim().toLowerCase();
+        if (req.body.pendingEmail !== undefined) firestoreUpdate.pendingEmail = String(req.body.pendingEmail).trim().toLowerCase();
         if (fullName !== undefined) firestoreUpdate.fullName = fullName;
         if (avatar !== undefined) firestoreUpdate.avatar = avatar;
         if (phoneNumber !== undefined) firestoreUpdate.phoneNumber = phoneNumber;
-        if (zone !== undefined) firestoreUpdate.zone = zone;
+        if (zone !== undefined) {
+            firestoreUpdate.zone = zone;
+            firestoreUpdate.zoneAddress = zone;
+        }
         if (status !== undefined) firestoreUpdate.status = status;
         if (typeof isDisabled === 'boolean') {
             firestoreUpdate.isDisabled = isDisabled;
