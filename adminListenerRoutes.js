@@ -114,9 +114,29 @@ async function getCitizenByReportId(reportId) {
 /**
  * Helper to extract Report ID from string targets (e.g. "Report_#RID00000001" -> "RID00000001")
  */
+function normalizeMetadata(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  return {};
+}
+
 function extractReportId(target, metadata) {
-  if (metadata?.reportId) return metadata.reportId;
-  if (metadata?.reportID) return metadata.reportID;
+  const normalizedMetadata = normalizeMetadata(metadata);
+  if (normalizedMetadata?.reportId) return String(normalizedMetadata.reportId).trim();
+  if (normalizedMetadata?.reportID) return String(normalizedMetadata.reportID).trim();
+
   if (!target) return null;
 
   const rawTarget = String(target).trim();
@@ -140,13 +160,16 @@ function extractReportId(target, metadata) {
 router.post('/admin-actions/log', async (req, res, next) => {
   try {
     const {
-      action,
+      action: bodyAction,
       target,
       adminName: bodyAdminName,
       adminId: bodyAdminId,
-      metadata,
+      metadata: rawMetadata,
       targetRoom,
     } = req.body;
+
+    const metadata = normalizeMetadata(rawMetadata);
+    const action = String(bodyAction || '').trim().toUpperCase();
 
     // 1. Validation
     if (!action || !target) {
@@ -168,13 +191,32 @@ router.post('/admin-actions/log', async (req, res, next) => {
     // Extract cleanest report ID possible
     const reportId = extractReportId(target, metadata);
 
-    // 2. Resolve Target Citizen details from Firestore
-    let targetedCitizen = null;
+        // 2. Resolve target citizen identity.
+    // Prefer identifiers supplied by the authenticated admin client, then
+    // enrich/fallback through Firestore using the report ID.
+    let targetedCitizen = {
+      citizenID:
+        metadata.citizenID ||
+        metadata.citizenId ||
+        metadata.CID ||
+        null,
+      authUid:
+        metadata.authUid ||
+        metadata.userId ||
+        metadata.uid ||
+        null,
+    };
+
     if (reportId) {
-      targetedCitizen = await getCitizenByReportId(reportId);
+      const lookedUpCitizen = await getCitizenByReportId(reportId);
+      targetedCitizen = {
+        citizenID: targetedCitizen.citizenID || lookedUpCitizen?.citizenID || null,
+        authUid: targetedCitizen.authUid || lookedUpCitizen?.authUid || null,
+      };
     }
 
     // Flutter registers its socket using the Firebase Auth UID. If the
+
     // tracking record contains only a citizen ID, resolve the UID as well.
     if (targetedCitizen?.citizenID && !targetedCitizen?.authUid) {
       try {
@@ -206,22 +248,32 @@ router.post('/admin-actions/log', async (req, res, next) => {
     }
 
     // 3. Format Standardized Event Payload
-    const actionPayload = {
-      eventId: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        const actionPayload = {
+      eventId:
+        metadata.eventId ||
+        `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       action,
       target,
       reportId: reportId || null,
+
       citizenID: targetedCitizen?.citizenID || null,
       authUid: targetedCitizen?.authUid || null,
       adminName: resolvedAdminName,
       adminId,
       adminUid: adminProfile?.uid || null,
       department: adminProfile?.department || null,
-      metadata: metadata || {},
+            metadata,
+
       timestamp: new Date().toISOString(),
     };
 
     console.log(`⚡ [Admin Action Captured] [ID: ${actionPayload.adminId}] ${actionPayload.adminName} → ${actionPayload.action} (${actionPayload.target})`);
+    console.log('[Admin Action Routing]', {
+      action: actionPayload.action,
+      reportId: actionPayload.reportId,
+      citizenID: actionPayload.citizenID,
+      authUid: actionPayload.authUid,
+    });
 
     // 4. 🚀 Targeted Relay via WebSockets
     try {
