@@ -2,117 +2,39 @@ const express = require('express');
 const router = express.Router();
 const socketInit = require('./socket');
 const { getMessaging } = require('firebase-admin/messaging');
-const { getFirestore } = require('firebase-admin/firestore');
-const { getAuth } = require('firebase-admin/auth');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { verifyToken } = require('./authMiddleware');
+const { invalidateAuditLogCache } = require('./auditloglimitcache');
 
 /**
- * Resolve the authenticated admin profile and its human-readable adminId.
- * This preserves values such as ADMIN-004 in the socket/FCM payload.
+ * Helper to look up an Admin's profile and custom adminId from Firestore
  */
-async function getAdminProfileFromRequest(req) {
-  const authHeader = req.headers.authorization || '';
-  if (!authHeader.startsWith('Bearer ')) return null;
-
-  try {
-    const decodedToken = await getAuth().verifyIdToken(authHeader.substring(7));
-    const uid = decodedToken.uid;
-    const adminDoc = await getFirestore().collection('admins').doc(uid).get();
-
-    if (!adminDoc.exists) {
-      return { uid, adminId: null, name: decodedToken.name || 'System Admin', department: null };
-    }
-
-    const data = adminDoc.data();
-    return {
-      uid,
-      adminId: data.adminId || null,
-      name: data.name || data.displayName || decodedToken.name || 'System Admin',
-      department: data.department || null,
-    };
-  } catch (error) {
-    console.warn('⚠️ Could not resolve authenticated admin profile:', error.message);
-    return null;
-  }
-}
-
-/**
- * Helper to fetch Citizen identifiers (CID / authUid) linked to a Report ID
- */
-async function getCitizenByReportId(reportId) {
-  if (!reportId) return null;
+async function getAdminProfile(uid) {
+  if (!uid) return null;
   const db = getFirestore();
 
   try {
-    // 1️⃣ Look up in `citizenreporttracking` collection by document ID
-    let trackingDoc = await db.collection('citizenreporttracking').doc(reportId).get();
-
-    if (trackingDoc.exists) {
-      const data = trackingDoc.data();
+    const adminDoc = await db.collection('admins').doc(uid).get();
+    if (adminDoc.exists) {
+      const data = adminDoc.data();
       return {
-        citizenID: data.CID || data.citizenID || data.citizenId || null,
-        authUid: data.authUid || data.uid || null,
+        uid,
+        adminId: data.adminId || null,
+        name: data.name || data.displayName || 'System Admin',
+        email: data.email || null,
+        department: data.department || null,
       };
     }
-
-    // Fallback searches in tracking records using common report-ID field names.
-    for (const fieldName of ['ReportId', 'reportId', 'reportID', 'reportDocId']) {
-      const trackingQuery = await db.collection('citizenreporttracking')
-        .where(fieldName, '==', reportId)
-        .limit(1)
-        .get();
-
-      if (!trackingQuery.empty) {
-        const data = trackingQuery.docs[0].data();
-        return {
-          citizenID: data.CID || data.citizenID || data.citizenId || null,
-          authUid: data.authUid || data.authUID || data.uid || data.userId || data.userUID || null,
-        };
-      }
-    }
-
-    // The report may already have moved to approved_reports after dispatch.
-    // Search both collections by document ID and common report-ID fields.
-    for (const collectionName of ['reports', 'approved_reports']) {
-      const reportDoc = await db.collection(collectionName).doc(reportId).get();
-      if (reportDoc.exists) {
-        const data = reportDoc.data();
-        return {
-          citizenID: data.citizenID || data.CID || data.citizenId || data.submitterCitizenID || null,
-          authUid: data.authUid || data.authUID || data.uid || data.userId || data.userUID || null,
-        };
-      }
-
-      for (const fieldName of [
-        'reportID',
-        'reportId',
-        'ReportId',
-        'documentId',
-        'verifiedReportId',
-        'verifiedreportID',
-      ]) {
-        const reportQuery = await db.collection(collectionName)
-          .where(fieldName, '==', reportId)
-          .limit(1)
-          .get();
-
-        if (!reportQuery.empty) {
-          const data = reportQuery.docs[0].data();
-          return {
-            citizenID: data.citizenID || data.CID || data.citizenId || data.submitterCitizenID || null,
-            authUid: data.authUid || data.authUID || data.uid || data.userId || data.userUID || null,
-          };
-        }
-      }
-    }
   } catch (err) {
-    console.error(`⚠️ Error resolving citizen for report ${reportId}:`, err.message);
+    console.error(`⚠️ Error fetching admin profile for UID ${uid}:`, err.message);
   }
 
   return null;
 }
 
 /**
- * Helper to extract Report ID from string targets (e.g. "Report_#RID00000001" -> "RID00000001")
+ * Normalize metadata because some clients send it as an object while others
+ * send JSON text.
  */
 function normalizeMetadata(value) {
   if (!value) return {};
@@ -124,7 +46,8 @@ function normalizeMetadata(value) {
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? parsed
         : {};
-    } catch (_) {
+    } catch (error) {
+      console.warn('⚠️ Could not parse admin metadata JSON:', error.message);
       return {};
     }
   }
@@ -132,252 +55,188 @@ function normalizeMetadata(value) {
   return {};
 }
 
-function extractReportId(target, metadata) {
-  const normalizedMetadata = normalizeMetadata(metadata);
-  if (normalizedMetadata?.reportId) return String(normalizedMetadata.reportId).trim();
-  if (normalizedMetadata?.reportID) return String(normalizedMetadata.reportID).trim();
-
-  if (!target) return null;
-
-  const rawTarget = String(target).trim();
-
-  // Match formatted report IDs such as RID00000001 inside a display target.
-  const match = rawTarget.match(/RID\d+/i);
-  if (match) return match[0].toUpperCase();
-
-  // Preserve arbitrary Firestore document IDs as valid lookup keys.
-  return rawTarget
-    .replace(/^Report[_\s-]*#?/i, '')
-    .replace(/^#/, '')
-    .trim() || null;
+function getMetadataCitizenIdentifiers(metadata) {
+  const normalized = normalizeMetadata(metadata);
+  return {
+    citizenID:
+      normalized.citizenID ||
+      normalized.citizenId ||
+      normalized.CID ||
+      normalized.cid ||
+      null,
+    authUid:
+      normalized.authUid ||
+      normalized.authUID ||
+      normalized.userId ||
+      normalized.uid ||
+      normalized.userUID ||
+      null,
+  };
 }
 
 /**
- * 📡 POST /api/admin-actions/log
- * Captures UI actions from Web Admin (e.g., Opening Verify Modal for RID00000001),
- * relays targeted updates via Socket.io to the submitter, and dispatches targeted FCM.
+ * Helper to extract Report ID, Citizen ID, or Shared Link details from targets or metadata
  */
-router.post('/admin-actions/log', async (req, res, next) => {
-  try {
-    const {
-      action: bodyAction,
-      target,
-      adminName: bodyAdminName,
-      adminId: bodyAdminId,
-      metadata: rawMetadata,
-      targetRoom,
-    } = req.body;
+function parseTargetEntity(target, metadata) {
 
-    const metadata = normalizeMetadata(rawMetadata);
-    const action = String(bodyAction || '').trim().toUpperCase();
+  const targetStr = String(target || '').trim();
 
-    // 1. Validation
-    if (!action || !target) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required fields: "action" and "target" are required.',
-      });
-    }
-
-    // Resolve the real admin identity before creating the event payload.
-    const adminProfile = await getAdminProfileFromRequest(req);
-    const adminId =
-      adminProfile?.adminId ||
-      (bodyAdminId && bodyAdminId !== 'admin_123' ? bodyAdminId : null) ||
-      'ADMIN-004';
-    const resolvedAdminName =
-      adminProfile?.name || bodyAdminName || 'System Admin';
-
-    // Extract cleanest report ID possible
-    const reportId = extractReportId(target, metadata);
-
-        // 2. Resolve target citizen identity.
-    // Prefer identifiers supplied by the authenticated admin client, then
-    // enrich/fallback through Firestore using the report ID.
-    let targetedCitizen = {
-      citizenID:
-        metadata.citizenID ||
-        metadata.citizenId ||
-        metadata.CID ||
-        null,
-      authUid:
-        metadata.authUid ||
-        metadata.userId ||
-        metadata.uid ||
-        null,
+  // 1️⃣ Check for Citizen Target (e.g. "CID00000001", "CID00000020", "CID_11")
+  const cidMatch = targetStr.match(/CID[_\d]+/i) || metadata?.citizenID?.match(/CID[_\d]+/i);
+  if (cidMatch) {
+    return {
+      entityType: 'CITIZEN',
+      entityId: cidMatch[0].toUpperCase(),
     };
-
-    if (reportId) {
-      const lookedUpCitizen = await getCitizenByReportId(reportId);
-      targetedCitizen = {
-        citizenID: targetedCitizen.citizenID || lookedUpCitizen?.citizenID || null,
-        authUid: targetedCitizen.authUid || lookedUpCitizen?.authUid || null,
-      };
-    }
-
-    // Flutter registers its socket using the Firebase Auth UID. If the
-
-    // tracking record contains only a citizen ID, resolve the UID as well.
-    if (targetedCitizen?.citizenID && !targetedCitizen?.authUid) {
-      try {
-        const db = getFirestore();
-        const citizenQuery = await db
-          .collection('citizens')
-          .where('citizenID', '==', targetedCitizen.citizenID)
-          .limit(1)
-          .get();
-
-        if (!citizenQuery.empty) {
-          const citizenData = citizenQuery.docs[0].data();
-          targetedCitizen = {
-            ...targetedCitizen,
-            authUid: citizenData.authUid ||
-              citizenData.authUID ||
-              citizenData.uid ||
-              citizenData.userId ||
-              citizenData.userUID ||
-              null,
-          };
-        }
-      } catch (lookupErr) {
-        console.warn(
-          `⚠️ Could not enrich citizen Auth UID for ${targetedCitizen.citizenID}:`,
-          lookupErr.message,
-        );
-      }
-    }
-
-    // 3. Format Standardized Event Payload
-        const actionPayload = {
-      eventId:
-        metadata.eventId ||
-        `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      action,
-      target,
-      reportId: reportId || null,
-
-      citizenID: targetedCitizen?.citizenID || null,
-      authUid: targetedCitizen?.authUid || null,
-      adminName: resolvedAdminName,
-      adminId,
-      adminUid: adminProfile?.uid || null,
-      department: adminProfile?.department || null,
-            metadata,
-
-      timestamp: new Date().toISOString(),
-    };
-
-    console.log(`⚡ [Admin Action Captured] [ID: ${actionPayload.adminId}] ${actionPayload.adminName} → ${actionPayload.action} (${actionPayload.target})`);
-    console.log('[Admin Action Routing]', {
-      action: actionPayload.action,
-      reportId: actionPayload.reportId,
-      citizenID: actionPayload.citizenID,
-      authUid: actionPayload.authUid,
-    });
-
-    // 4. 🚀 Targeted Relay via WebSockets
-    try {
-      const io = socketInit.getIO();
-
-      if (targetRoom && targetRoom !== 'super_admins') {
-        // Preserve explicit-room delivery for admin/dashboard consumers.
-        io.to(targetRoom).emit('ADMIN_ACTION_EVENT', actionPayload);
-        console.log(`📡 Broadcasted to specified room: ${targetRoom}`);
-      }
-
-      if (targetedCitizen?.authUid || targetedCitizen?.citizenID) {
-        // TARGET ONLY THE CITIZEN WHO REPORTED THIS INCIDENT
-        if (targetedCitizen.authUid) {
-          io.to(targetedCitizen.authUid).emit('ADMIN_ACTION_EVENT', actionPayload);
-          io.to(targetedCitizen.authUid).emit('CITIZEN_REPORT_UPDATED', actionPayload);
-        }
-        if (targetedCitizen.citizenID) {
-          io.to(targetedCitizen.citizenID).emit('ADMIN_ACTION_EVENT', actionPayload);
-          io.to(targetedCitizen.citizenID).emit('CITIZEN_REPORT_UPDATED', actionPayload);
-        }
-
-        // Also emit to super_admins so other Web Admin panels stay updated
-        io.to('super_admins').emit('ADMIN_ACTION_EVENT', actionPayload);
-
-        console.log(`📡 Targeted notification emitted strictly to citizen rooms (${targetedCitizen.citizenID} / ${targetedCitizen.authUid}) and super_admins`);
-      } else {
-        // System admin monitoring rooms only (DO NOT broadcast globally to all citizens)
-        io.to('super_admins').emit('ADMIN_ACTION_EVENT', actionPayload);
-        console.log(`📡 Broadcasted strictly to admin monitoring room (super_admins)`);
-      }
-    } catch (wsErr) {
-      console.warn('⚠️ WebSockets failed or not initialized:', wsErr.message);
-    }
-
-    // The super-admin movement detector is mounted immediately after this
-    // listener and owns the final response, audit-log persistence, adminId
-    // formatting, and one-time FCM dispatch. Continue the same request so
-    // both systems execute instead of one route shadowing the other.
-    req.mobileNotificationPayload = actionPayload;
-    return next();
-  } catch (error) {
-    next(error);
   }
-});
+
+  // 2️⃣ Check for Report Target (e.g. "RID00000008", "Report_#RID00000008")
+  const metadataReportId = metadata?.reportId || metadata?.reportID || metadata?.ReportId;
+  const ridMatch =
+    targetStr.match(/RID\d+/i) ||
+    String(metadataReportId || '').match(/RID\d+/i);
+
+  if (ridMatch) {
+    return {
+      entityType: 'REPORT',
+      entityId: ridMatch[0].toUpperCase(),
+    };
+  }
+
+  // React may send a Firestore document ID instead of a formatted RID.
+  // When reportId metadata is present, preserve the complete identifier.
+  if (metadataReportId) {
+    return {
+      entityType: 'REPORT',
+      entityId: String(metadataReportId).trim(),
+    };
+  }
+
+  // Also support the parent screen's "Report_#..." target format.
+  if (/^report[_\s#-]/i.test(targetStr)) {
+    return {
+      entityType: 'REPORT',
+      entityId: targetStr.replace(/^report[_\s#-]*/i, '').trim(),
+    };
+  }
+
+  // 3️⃣ Check for Shared Link / Broadcast Target (e.g. 24-char hex key, link URLs, or linkKey in metadata)
+  const isHexKey = /^[a-f0-9]{24}$/i.test(targetStr);
+  if (isHexKey || metadata?.linkKey || targetStr.includes('/report/') || metadata?.targetDepartment) {
+    return {
+      entityType: 'LINK',
+      entityId: metadata?.linkKey || targetStr,
+    };
+  }
+
+  return {
+    entityType: 'UNKNOWN',
+    entityId: targetStr,
+  };
+}
 
 /**
- * Helper function to send targeted FCM notifications to specific citizen topic
+ * Helper to fetch Citizen identifiers (CID / authUid) linked to a Report or Citizen ID
+ */
+async function resolveCitizenTarget(entityType, entityId, metadata) {
+  const metadataIdentifiers = getMetadataCitizenIdentifiers(metadata);
+
+  if (!entityId || entityType === 'LINK') {
+    return metadataIdentifiers.citizenID || metadataIdentifiers.authUid
+      ? metadataIdentifiers
+      : null;
+  }
+
+  const db = getFirestore();
+
+  try {
+    // 1️⃣ Direct Citizen Lookup
+    if (entityType === 'CITIZEN') {
+      const citizenDoc = await db.collection('citizens').doc(entityId).get();
+      if (citizenDoc.exists) {
+        const data = citizenDoc.data();
+        return {
+          citizenID: entityId,
+          authUid: data.authUid || data.uid || null,
+        };
+      }
+
+      const citizenQuery = await db
+        .collection('citizens')
+        .where('citizenID', '==', entityId)
+        .limit(1)
+        .get();
+
+      if (!citizenQuery.empty) {
+        const data = citizenQuery.docs[0].data();
+        return {
+          citizenID: entityId,
+          authUid: data.authUid || data.uid || null,
+        };
+      }
+    }
+
+    // 2️⃣ Report Lookup (Resolves associated Citizen)
+    if (entityType === 'REPORT') {
+      let trackingDoc = await db.collection('citizenreporttracking').doc(entityId).get();
+      if (trackingDoc.exists) {
+        const data = trackingDoc.data();
+        return {
+          citizenID: data.CID || data.citizenID || data.citizenId || null,
+          authUid: data.authUid || data.uid || null,
+        };
+      }
+
+      const trackingQuery = await db
+        .collection('citizenreporttracking')
+        .where('ReportId', '==', entityId)
+        .limit(1)
+        .get();
+
+      if (!trackingQuery.empty) {
+        const data = trackingQuery.docs[0].data();
+        return {
+          citizenID: data.CID || data.citizenID || data.citizenId || null,
+          authUid: data.authUid || data.uid || null,
+        };
+      }
+
+      let reportDoc = await db.collection('reports').doc(entityId).get();
+      if (reportDoc.exists) {
+        const data = reportDoc.data();
+        return {
+          citizenID: data.citizenID || data.CID || data.citizenId || null,
+          authUid: data.authUid || data.uid || null,
+        };
+      }
+    }
+  } catch (err) {
+    console.error(`⚠️ Error resolving citizen for ${entityType} ${entityId}:`, err.message);
+  }
+
+  return metadataIdentifiers.citizenID || metadataIdentifiers.authUid
+    ? metadataIdentifiers
+    : null;
+}
+
+/**
+ * Helper function to send targeted FCM notifications for report updates AND citizen profile movements
  */
 async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
   const messaging = getMessaging();
-  const db = getFirestore();
 
-  // Respect the citizen’s persisted notification preference.
-  // Existing citizens without this field remain enabled by default.
-  let citizenSnapshot = null;
-  const citizens = db.collection('citizens');
-  const targetUid = targetedCitizen?.authUid || targetedCitizen?.uid;
-
-  if (targetUid) {
-    citizenSnapshot = await citizens.doc(targetUid).get();
-
-    if (!citizenSnapshot.exists) {
-      const authUidQuery = await citizens
-        .where('authUid', '==', targetUid)
-        .limit(1)
-        .get();
-      citizenSnapshot = authUidQuery.empty ? null : authUidQuery.docs[0];
-    }
-
-    if (!citizenSnapshot?.exists) {
-      const uidQuery = await citizens
-        .where('uid', '==', targetUid)
-        .limit(1)
-        .get();
-      citizenSnapshot = uidQuery.empty ? null : uidQuery.docs[0];
-    }
-  }
-
-  if (!citizenSnapshot?.exists && targetedCitizen?.citizenID) {
-    const query = await citizens
-      .where('citizenID', '==', targetedCitizen.citizenID)
-      .limit(1)
-      .get();
-    citizenSnapshot = query.empty ? null : query.docs[0];
-  }
-
-  if (citizenSnapshot?.exists && citizenSnapshot.data()?.notificationsEnabled === false) {
-    console.log(`🔕 FCM suppressed for citizen ${targetedCitizen.citizenID || targetUid}: notifications disabled.`);
-    return;
-  }
-
-  // Target specific citizen topic (e.g., `citizen_CID00000001` or `user_AUTHUID`)
-  const targetTopic = targetedCitizen?.citizenID 
-    ? `citizen_${targetedCitizen.citizenID}` 
-    : (targetedCitizen?.authUid ? `user_${targetedCitizen.authUid}` : null);
+  const targetTopic = targetedCitizen?.citizenID
+    ? `citizen_${targetedCitizen.citizenID}`
+    : targetedCitizen?.authUid
+    ? `user_${targetedCitizen.authUid}`
+    : null;
 
   if (!targetTopic) return;
 
-  // 🎯 Format human-readable title & message based on action status
-  let notificationTitle = `Report Update: ${payload.action}`;
-  let notificationBody = `Your report ${payload.reportId || payload.target} was updated by ${payload.adminName}.`;
-
   const upperAction = String(payload.action).toUpperCase();
+
+  let notificationTitle = null;
+  let notificationBody = null;
 
   if (
     upperAction === 'REPORT_VERIFIED' ||
@@ -392,6 +251,26 @@ async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
   ) {
     notificationTitle = '🔍 Report Under Review';
     notificationBody = `Your emergency report (${payload.reportId || payload.target}) is currently being reviewed by system operators.`;
+  } else if (upperAction === 'DISABLE_CITIZEN_ACCOUNT') {
+    notificationTitle = '⚠️ Account Disabled';
+    notificationBody = 'Your citizen account has been temporarily disabled by an administrator.';
+  } else if (upperAction === 'ENABLE_CITIZEN_ACCOUNT') {
+    notificationTitle = '✅ Account Re-activated';
+    notificationBody = 'Your citizen account has been re-activated by an administrator.';
+    } else if (
+    upperAction === 'REPORT_REJECTED' ||
+    upperAction === 'REJECTED_REPORT'
+  ) {
+    notificationTitle = 'Report Rejected';
+    notificationBody = `Your emergency report (${payload.reportId || payload.target}) was not approved and has been moved to the rejected archive.`;
+  } else if (upperAction === 'EDIT_CITIZEN') {
+
+    notificationTitle = 'ℹ️ Profile Updated';
+    notificationBody = 'An administrator updated your profile information.';
+  }
+
+  if (!notificationTitle) {
+    return;
   }
 
   const message = {
@@ -399,13 +278,13 @@ async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
       title: notificationTitle,
       body: notificationBody,
     },
-    // FCM data fields MUST strictly be strings
     data: {
       eventId: String(payload.eventId),
       action: String(payload.action),
       target: String(payload.target),
       reportId: String(payload.reportId || ''),
       citizenID: String(payload.citizenID || ''),
+      adminId: String(payload.adminId || ''),
       timestamp: String(payload.timestamp),
       metadata: JSON.stringify(payload.metadata || {}),
     },
@@ -415,5 +294,191 @@ async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
   const response = await messaging.send(message);
   console.log(`📲 [Targeted FCM Dispatched] Topic: ${targetTopic} | Message ID: ${response}`);
 }
+
+/**
+ * 📡 POST /api/admin-actions/log
+ * Handles audit logs for Report Verification workflows, Citizen Management movements, and Link Sharing / Broadcasts.
+ */
+router.post('/admin-actions/log', verifyToken, async (req, res, next) => {
+  try {
+    const {
+      action: rawAction,
+      target,
+      metadata: rawMetadata,
+      targetRoom,
+      adminId: bodyAdminId,
+      adminName: bodyAdminName,
+    } = req.body;
+
+    const action = String(rawAction || '').trim().toUpperCase();
+    const metadata = normalizeMetadata(rawMetadata);
+    const db = getFirestore();
+
+    // 1. Validation
+    if (!action || !target) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: "action" and "target" are required.',
+      });
+    }
+
+    // 2. Resolve Admin Profile & adminId
+    const authUid = req.user?.uid;
+    const adminProfile = await getAdminProfile(authUid);
+
+    const adminId = adminProfile?.adminId || bodyAdminId || 'ADMIN-004';
+    const adminName = adminProfile?.name || bodyAdminName || 'System Admin';
+
+    // 3. Resolve Target Entity (REPORT, CITIZEN, LINK, or UNKNOWN)
+    const { entityType, entityId } = parseTargetEntity(target, metadata);
+    let targetedCitizen = await resolveCitizenTarget(entityType, entityId, metadata);
+
+    // Always preserve identifiers supplied by the authenticated frontend, even
+    // when Firestore lookup returns only one identifier or no report match.
+    const metadataIdentifiers = getMetadataCitizenIdentifiers(metadata);
+    targetedCitizen = {
+      citizenID: targetedCitizen?.citizenID || metadataIdentifiers.citizenID || null,
+      authUid: targetedCitizen?.authUid || metadataIdentifiers.authUid || null,
+    };
+
+    // If report tracking contains only a CID, resolve the Auth UID as well so
+    // Flutter clients that join by Firebase UID receive the event.
+    if (targetedCitizen?.citizenID && !targetedCitizen?.authUid) {
+      try {
+        const citizenQuery = await db
+          .collection('citizens')
+          .where('citizenID', '==', targetedCitizen.citizenID)
+          .limit(1)
+          .get();
+
+        if (!citizenQuery.empty) {
+          const citizenData = citizenQuery.docs[0].data();
+          targetedCitizen = {
+            ...targetedCitizen,
+            authUid: citizenData.authUid || citizenData.uid || null,
+          };
+        }
+      } catch (lookupErr) {
+        console.warn(`⚠️ Could not enrich citizen Auth UID for ${targetedCitizen.citizenID}:`, lookupErr.message);
+      }
+    }
+
+    // 4. Generate Console Log String and Format Payload
+    const eventId = `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const consoleLogMessage = `⚡ [Admin Movement Captured] [ID: ${adminId}] ${adminName} → ${action} (${target})`;
+
+    const actionPayload = {
+      eventId,
+      action,
+      target,
+      entityType,
+            reportId: entityType === 'REPORT'
+        ? entityId
+        : metadata.reportId || metadata.reportID || null,
+
+      citizenID: targetedCitizen?.citizenID || (entityType === 'CITIZEN' ? entityId : null),
+      authUid: targetedCitizen?.authUid || null,
+      adminId,
+      adminUid: authUid || null,
+      adminName,
+      department: adminProfile?.department || null,
+      consoleLogMessage, // 📌 Saves the formatted node console log string
+      metadata: {
+        ...metadata,
+      },
+      timestamp: new Date().toISOString(),
+    };
+
+    // Print to Node.js backend console
+    console.log(consoleLogMessage);
+    console.log('[Admin Action Routing]', {
+      action: actionPayload.action,
+      reportId: actionPayload.reportId,
+      citizenID: actionPayload.citizenID,
+      authUid: actionPayload.authUid,
+      targetRoom,
+    });
+
+    // 5. 💾 Persist to `audit_logs` collection in Firestore & Invalidate Cache
+    try {
+      await db.collection('audit_logs').doc(eventId).set({
+        ...actionPayload,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      
+      // 🧹 Invalidate in-memory audit log cache on new write
+      invalidateAuditLogCache();
+
+      const firestorePersistLog = `💾 Persisted admin movement audit log ${eventId} to Firestore.`;
+      console.log(firestorePersistLog);
+
+      // Append terminal output trace inside Firestore metadata doc
+      await db.collection('audit_logs').doc(eventId).update({
+        systemLogTrace: FieldValue.arrayUnion(consoleLogMessage, firestorePersistLog)
+      });
+    } catch (dbErr) {
+      console.error(`❌ Failed to persist audit log to Firestore:`, dbErr.message);
+    }
+
+    // 6. 🚀 Relay via WebSockets
+    try {
+      const io = socketInit.getIO();
+
+      io.to('super_admins').emit('AUDIT_LOG_EVENT', actionPayload);
+      io.to('super_admins').emit('admin_movement_log', actionPayload);
+
+      // Keep the existing explicitly requested-room behavior for admin/dashboard consumers.
+      if (targetRoom && targetRoom !== 'super_admins') {
+        io.to(targetRoom).emit('ADMIN_ACTION_EVENT', actionPayload);
+        io.to(targetRoom).emit('CITIZEN_REPORT_UPDATED', actionPayload);
+        io.to(targetRoom).emit('CITIZEN_ACCOUNT_UPDATED', actionPayload);
+      }
+
+      // Also always notify the resolved citizen rooms. This must not be an
+      // else-if because React may provide targetRoom while the citizen is
+      // identified separately by authUid and/or citizenID.
+      const citizenRooms = new Set([
+        targetedCitizen?.authUid,
+        targetedCitizen?.citizenID,
+        actionPayload.authUid,
+        actionPayload.citizenID,
+      ].filter(Boolean).map(String));
+
+      for (const citizenRoom of citizenRooms) {
+        io.to(citizenRoom).emit('ADMIN_ACTION_EVENT', actionPayload);
+        io.to(citizenRoom).emit('CITIZEN_REPORT_UPDATED', actionPayload);
+        io.to(citizenRoom).emit('CITIZEN_ACCOUNT_UPDATED', actionPayload);
+      }
+
+      if (citizenRooms.size > 0) {
+        console.log(
+          `📡 Verification events emitted to citizen rooms: ${Array.from(citizenRooms).join(', ')}`,
+        );
+      }
+    } catch (wsErr) {
+      console.warn('⚠️ WebSockets failed or not initialized:', wsErr.message);
+    }
+
+    // 7. 📲 Targeted FCM Push Notification (if applicable)
+    if (targetedCitizen) {
+      dispatchTargetedFcmNotification(actionPayload, targetedCitizen).catch((fcmErr) => {
+        console.error('❌ Failed to dispatch Targeted FCM Push Notification:', fcmErr.message);
+      });
+    }
+
+    // 8. Response
+    return res.status(200).json({
+      success: true,
+      message: `Admin action (${action}) logged successfully.`,
+      eventId: actionPayload.eventId,
+      adminId: actionPayload.adminId,
+      consoleLogMessage: actionPayload.consoleLogMessage,
+      entityType,
+      targetedCitizen,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;
