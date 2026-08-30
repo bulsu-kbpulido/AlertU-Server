@@ -12,11 +12,17 @@ const db = getFirestore();
 // unless a domain is verified (which this team doesn't have). Gmail SMTP
 // with an App Password can send to any recipient with no verification step.
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  // Force IPv4 — some hosting platforms (like Railway) can't route outbound
+  // IPv6 traffic, causing "ENETUNREACH" errors when Node resolves Gmail's
+  // SMTP hostname to an IPv6 address first.
+  family: 4,
 });
 
 /**
