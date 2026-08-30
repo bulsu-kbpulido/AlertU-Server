@@ -1,17 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 
 const db = getFirestore();
 
-// 🚀 Initialize Resend API client
-const resend = new Resend(process.env.RESEND_API_KEY);
+// 🚀 Gmail SMTP transporter (via nodemailer) — switched from Resend because
+// Resend's free tier only allows sending to the account owner's own email
+// unless a domain is verified (which this team doesn't have). Gmail SMTP
+// with an App Password can send to any recipient with no verification step.
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 /**
- * Helper: Generate & Dispatch Admin Password Reset 6-Digit OTP via Resend
+ * Helper: Generate & Dispatch Admin Password Reset 6-Digit OTP via Gmail SMTP
  */
 async function generateAndSendAdminResetOTP(uid, targetEmail) {
   // 1. Generate 6-digit PIN
@@ -32,17 +41,14 @@ async function generateAndSendAdminResetOTP(uid, targetEmail) {
     attempts: 0,
   });
 
-  // 5. Determine recipient address:
-  // Note: On Resend Free Tier, sending from 'onboarding@resend.dev' ONLY works when 'to' is set
-  // to your own Resend account email. Override via RESEND_TEST_EMAIL if needed during dev.
-  const recipientEmail = process.env.RESEND_TEST_EMAIL || targetEmail;
-
-  // 6. Send Branded Admin Email via Resend HTTP API
-  const { data, error } = await resend.emails.send({
-    from: 'AlertU System <onboarding@resend.dev>',
-    to: recipientEmail,
-    subject: 'AlertU Admin Password Reset Code',
-    html: `
+  // 5. Send Branded Admin Email via Gmail SMTP — can go to any recipient,
+  // no test-mode restriction like Resend's free tier had.
+  try {
+    await transporter.sendMail({
+      from: `"AlertU System" <${process.env.EMAIL_USER}>`,
+      to: targetEmail,
+      subject: 'AlertU Admin Password Reset Code',
+      html: `
       <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
         <h2 style="color: #0d47a1; text-align: center;">Admin Password Reset</h2>
         <p style="color: #333;">You requested to reset your Admin account password. Use the verification code below in the app/dashboard:</p>
@@ -52,14 +58,13 @@ async function generateAndSendAdminResetOTP(uid, targetEmail) {
         <p style="color: #666; font-size: 13px;">This code will expire in <strong>10 minutes</strong>. If you did not request this, please secure your account immediately.</p>
       </div>
     `,
-  });
-
-  if (error) {
-    console.error('❌ Resend Delivery Error Details:', error);
-    throw new Error(`Resend API Error: ${error.message}`);
+    });
+    console.log(`✅ Admin password reset OTP email sent via Gmail SMTP to ${targetEmail}`);
+  } catch (error) {
+    console.error('❌ Gmail SMTP Delivery Error Details:', error);
+    const smtpMessage = typeof error?.message === 'string' ? error.message : JSON.stringify(error);
+    throw new Error(`Email delivery error: ${smtpMessage}`);
   }
-
-  console.log(`✅ Admin password reset OTP email sent via Resend to ${recipientEmail} (ID: ${data.id})`);
 }
 
 // =========================================================================
@@ -143,10 +148,11 @@ const handleSendAdminResetOtp = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error sending Admin reset OTP:', error);
+    const safeMessage = typeof error?.message === 'string' ? error.message : 'Failed to send verification email.';
     return res.status(500).json({
       success: false,
-      message: error.message || 'Failed to send verification email.',
-      error: error.message || 'Failed to send verification email'
+      message: safeMessage,
+      error: safeMessage
     });
   }
 };
