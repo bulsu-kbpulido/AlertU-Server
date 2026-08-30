@@ -1,36 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
-const dns = require('dns');
+const axios = require('axios');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
 
-// Force Node's DNS resolver to prefer IPv4 addresses process-wide. This is
-// a more reliable fix than the transporter's `family: 4` option alone —
-// Railway's containers often can't route outbound IPv6 traffic, causing
-// ENETUNREACH when Gmail's SMTP hostname resolves to an IPv6 address first.
-dns.setDefaultResultOrder('ipv4first');
-
 const db = getFirestore();
 
-// 🚀 Gmail SMTP transporter (via nodemailer) — switched from Resend because
-// Resend's free tier only allows sending to the account owner's own email
-// unless a domain is verified (which this team doesn't have). Gmail SMTP
-// with an App Password can send to any recipient with no verification step.
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  // Force IPv4 — some hosting platforms (like Railway) can't route outbound
-  // IPv6 traffic, causing "ENETUNREACH" errors when Node resolves Gmail's
-  // SMTP hostname to an IPv6 address first.
-  family: 4,
-});
+// 🚀 Brevo (formerly Sendinblue) transactional email API — switched from
+// Gmail SMTP because Railway blocks outbound SMTP ports (465/587) entirely,
+// which no amount of IPv4/DNS tuning can fix. Brevo sends over a normal
+// HTTPS POST request (port 443), which Railway allows freely. Brevo's free
+// tier also allows sending to ANY recipient once a single sender email is
+// verified — no domain purchase/verification needed (unlike Resend).
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 /**
  * Helper: Generate & Dispatch Admin Password Reset 6-Digit OTP via Gmail SMTP
@@ -54,14 +37,16 @@ async function generateAndSendAdminResetOTP(uid, targetEmail) {
     attempts: 0,
   });
 
-  // 5. Send Branded Admin Email via Gmail SMTP — can go to any recipient,
-  // no test-mode restriction like Resend's free tier had.
+  // 5. Send Branded Admin Email via Brevo's HTTPS API — can go to any
+  // recipient, and isn't blocked by Railway's SMTP port restrictions.
   try {
-    await transporter.sendMail({
-      from: `"AlertU System" <${process.env.EMAIL_USER}>`,
-      to: targetEmail,
-      subject: 'AlertU Admin Password Reset Code',
-      html: `
+    await axios.post(
+      BREVO_API_URL,
+      {
+        sender: { name: 'AlertU System', email: process.env.BREVO_SENDER_EMAIL },
+        to: [{ email: targetEmail }],
+        subject: 'AlertU Admin Password Reset Code',
+        htmlContent: `
       <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px;">
         <h2 style="color: #0d47a1; text-align: center;">Admin Password Reset</h2>
         <p style="color: #333;">You requested to reset your Admin account password. Use the verification code below in the app/dashboard:</p>
@@ -71,12 +56,23 @@ async function generateAndSendAdminResetOTP(uid, targetEmail) {
         <p style="color: #666; font-size: 13px;">This code will expire in <strong>10 minutes</strong>. If you did not request this, please secure your account immediately.</p>
       </div>
     `,
-    });
-    console.log(`✅ Admin password reset OTP email sent via Gmail SMTP to ${targetEmail}`);
+      },
+      {
+        headers: {
+          'api-key': process.env.BREVO_API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+      }
+    );
+    console.log(`✅ Admin password reset OTP email sent via Brevo to ${targetEmail}`);
   } catch (error) {
-    console.error('❌ Gmail SMTP Delivery Error Details:', error);
-    const smtpMessage = typeof error?.message === 'string' ? error.message : JSON.stringify(error);
-    throw new Error(`Email delivery error: ${smtpMessage}`);
+    console.error('❌ Brevo Delivery Error Details:', error?.response?.data || error.message);
+    const brevoMessage =
+      typeof error?.response?.data?.message === 'string'
+        ? error.response.data.message
+        : error?.message || 'Unknown error';
+    throw new Error(`Brevo API Error: ${brevoMessage}`);
   }
 }
 
