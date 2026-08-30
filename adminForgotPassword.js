@@ -2,8 +2,15 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const dns = require('dns');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue, Timestamp } = require('firebase-admin/firestore');
+
+// Force Node's DNS resolver to prefer IPv4 addresses process-wide. This is
+// a more reliable fix than the transporter's `family: 4` option alone —
+// Railway's containers often can't route outbound IPv6 traffic, causing
+// ENETUNREACH when Gmail's SMTP hostname resolves to an IPv6 address first.
+dns.setDefaultResultOrder('ipv4first');
 
 const db = getFirestore();
 
