@@ -57,9 +57,10 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
 
     const FRONTEND_URL = (process.env.APP_URL || 'https://alert-u-admin.vercel.app').replace(/\/+$/, '');
     
-    // Clean Public Link (Uses linkKey in path, NO tokens in query string)
-    // Both targets use the same URL; target remains stored in shared_links.
-    const targetPath = `/report/${linkKey}`;
+    // Use separate paths so each target opens its own page component.
+    const targetPath = target === 'citizen'
+      ? `/report/public/${linkKey}`
+      : `/report/${linkKey}`;
     const secureLink = `${FRONTEND_URL}${targetPath}`;
 
     return res.status(200).json({
