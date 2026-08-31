@@ -170,11 +170,20 @@ router.post('/admin-actions/log', async (req, res, next) => {
 
     // 2. Resolve Target Citizen details from Firestore
     let targetedCitizen = null;
-    if (reportId) {
+        if (reportId) {
       targetedCitizen = await getCitizenByReportId(reportId);
     }
 
+    const fallbackAuthUid = metadata?.authUid || metadata?.userId || metadata?.uid || null;
+    const fallbackCitizenId = metadata?.citizenID || metadata?.citizenId || metadata?.CID || null;
+
+    targetedCitizen = {
+      authUid: targetedCitizen?.authUid || fallbackAuthUid,
+      citizenID: targetedCitizen?.citizenID || fallbackCitizenId,
+    };
+
     // Flutter registers its socket using the Firebase Auth UID. If the
+
     // tracking record contains only a citizen ID, resolve the UID as well.
     if (targetedCitizen?.citizenID && !targetedCitizen?.authUid) {
       try {
@@ -209,10 +218,19 @@ router.post('/admin-actions/log', async (req, res, next) => {
     const actionPayload = {
       eventId: `evt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       action,
+      type: action === 'REPORT_REJECTED'
+        ? 'REPORT_REJECTED'
+        : action === 'VERIFIED_REPORT_DISPATCH'
+          ? 'REPORT_APPROVED'
+          : action === 'OPEN_VERIFY_MODAL' || action === 'START_VERIFY_WORKFLOW'
+            ? 'REPORT_UNDER_REVIEW'
+            : action,
+      status: metadata?.status || null,
       target,
-      reportId: reportId || null,
+      reportId: reportId || metadata?.reportId || metadata?.reportID || null,
       citizenID: targetedCitizen?.citizenID || null,
       authUid: targetedCitizen?.authUid || null,
+      userId: targetedCitizen?.authUid || metadata?.userId || null,
       adminName: resolvedAdminName,
       adminId,
       adminUid: adminProfile?.uid || null,
@@ -233,26 +251,22 @@ router.post('/admin-actions/log', async (req, res, next) => {
         console.log(`📡 Broadcasted to specified room: ${targetRoom}`);
       }
 
-      if (targetedCitizen?.authUid || targetedCitizen?.citizenID) {
-        // TARGET ONLY THE CITIZEN WHO REPORTED THIS INCIDENT
-        if (targetedCitizen.authUid) {
-          io.to(targetedCitizen.authUid).emit('ADMIN_ACTION_EVENT', actionPayload);
-          io.to(targetedCitizen.authUid).emit('CITIZEN_REPORT_UPDATED', actionPayload);
-        }
-        if (targetedCitizen.citizenID) {
-          io.to(targetedCitizen.citizenID).emit('ADMIN_ACTION_EVENT', actionPayload);
-          io.to(targetedCitizen.citizenID).emit('CITIZEN_REPORT_UPDATED', actionPayload);
-        }
+      const citizenRooms = new Set(
+        [actionPayload.authUid, actionPayload.userId, actionPayload.citizenID]
+          .filter(Boolean)
+          .map(String),
+      );
 
-        // Also emit to super_admins so other Web Admin panels stay updated
-        io.to('super_admins').emit('ADMIN_ACTION_EVENT', actionPayload);
-
-        console.log(`📡 Targeted notification emitted strictly to citizen rooms (${targetedCitizen.citizenID} / ${targetedCitizen.authUid}) and super_admins`);
-      } else {
-        // System admin monitoring rooms only (DO NOT broadcast globally to all citizens)
-        io.to('super_admins').emit('ADMIN_ACTION_EVENT', actionPayload);
-        console.log(`📡 Broadcasted strictly to admin monitoring room (super_admins)`);
+      for (const room of citizenRooms) {
+        io.to(room).emit('CITIZEN_NOTIFICATION', actionPayload);
+        io.to(room).emit('ADMIN_ACTION_EVENT', actionPayload);
+        io.to(room).emit('CITIZEN_REPORT_UPDATED', actionPayload);
       }
+
+      io.to('super_admins').emit('ADMIN_ACTION_EVENT', actionPayload);
+      console.log(
+        `📡 Notification relay: action=${action} rooms=${Array.from(citizenRooms).join(',') || 'NONE'}`,
+      );
     } catch (wsErr) {
       console.warn('⚠️ WebSockets failed or not initialized:', wsErr.message);
     }
