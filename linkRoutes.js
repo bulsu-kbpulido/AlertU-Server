@@ -89,46 +89,47 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
  * Resolves a report document across all relevant collections
  */
 async function resolveReportByIncidentId(id) {
-  // 1) reports by doc id
-  const reportDoc = await db.collection('reports').doc(id).get();
-  if (reportDoc.exists) {
-    return { id: reportDoc.id, ...reportDoc.data() };
+  const lookupId = String(id || '').trim();
+  if (!lookupId) return null;
+
+  const collections = [
+    'reports',
+    'approved_reports',
+    'AdminReports',
+    'ApprovedAdminReports'
+  ];
+
+  const identifierFields = [
+    'incidentId',
+    'reportID',
+    'reportId',
+    'verifiedReportId',
+    'verifiedreportID',
+    'id'
+  ];
+
+  // First check document IDs. This is the most reliable lookup.
+  for (const collectionName of collections) {
+    const document = await db.collection(collectionName).doc(lookupId).get();
+    if (document.exists) {
+      return { id: document.id, ...document.data() };
+    }
   }
 
-  // 2) approved_reports by doc id
-  const approvedReportDoc = await db.collection('approved_reports').doc(id).get();
-  if (approvedReportDoc.exists) {
-    return { id: approvedReportDoc.id, ...approvedReportDoc.data() };
-  }
+  // Then check every identifier field used by the different report modules.
+  for (const collectionName of collections) {
+    for (const fieldName of identifierFields) {
+      const snapshot = await db
+        .collection(collectionName)
+        .where(fieldName, '==', lookupId)
+        .limit(1)
+        .get();
 
-  // 3) AdminReports by doc id
-  const adminReportDoc = await db.collection('AdminReports').doc(id).get();
-  if (adminReportDoc.exists) {
-    return { id: adminReportDoc.id, ...adminReportDoc.data() };
-  }
-
-  // 4) reports by embedded incidentId field
-  const reportsByIncidentId = await db
-    .collection('reports')
-    .where('incidentId', '==', id)
-    .limit(1)
-    .get();
-
-  if (!reportsByIncidentId.empty) {
-    const found = reportsByIncidentId.docs[0];
-    return { id: found.id, ...found.data() };
-  }
-
-  // 5) approved_reports by embedded incidentId field
-  const approvedByIncidentId = await db
-    .collection('approved_reports')
-    .where('incidentId', '==', id)
-    .limit(1)
-    .get();
-
-  if (!approvedByIncidentId.empty) {
-    const found = approvedByIncidentId.docs[0];
-    return { id: found.id, ...found.data() };
+      if (!snapshot.empty) {
+        const document = snapshot.docs[0];
+        return { id: document.id, ...document.data() };
+      }
+    }
   }
 
   return null;
