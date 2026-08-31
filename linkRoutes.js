@@ -48,26 +48,30 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
     await db.collection('shared_links').doc(linkKey).set({
       linkKey,
       incidentId,
-      target,
+      target: normalizedTarget,
       origin: 'AlertU-Console',
       createdAt: Timestamp.now(),
       expiresAt: Timestamp.fromDate(expiresAt),
       active: true
     });
 
+    const normalizedTarget = String(target || '').toLowerCase() === 'citizen'
+      ? 'citizen'
+      : 'department';
+
     const FRONTEND_URL = (process.env.APP_URL || 'https://alert-u-admin.vercel.app').replace(/\/+$/, '');
-    
+
     // Use separate paths so each target opens its own page component.
-    const targetPath = target === 'citizen'
-      ? `/report/public/${linkKey}`
-      : `/report/${linkKey}`;
+    const targetPath = normalizedTarget === 'citizen'
+      ? `/report/public/${encodeURIComponent(linkKey)}`
+      : `/report/${encodeURIComponent(linkKey)}`;
     const secureLink = `${FRONTEND_URL}${targetPath}`;
 
     return res.status(200).json({
       success: true,
       secureLink,
       linkKey,
-      target,
+      target: normalizedTarget,
       incidentId,
       expiresAt
     });
@@ -129,6 +133,38 @@ async function resolveReportByIncidentId(id) {
   return null;
 }
 
+
+/**
+ * Removes private fields before a citizen-facing link receives the report.
+ * Department links retain the complete report payload.
+ */
+function sanitizeReportForTarget(report, target) {
+  if (!report || target !== 'citizen') return report;
+
+  const citizenReport = { ...report };
+  const privateFields = [
+    'audioUrl', 'voicenoteUrl', 'voiceNoteUrl', 'audio',
+    'audioLogs', 'voiceLogs', 'voiceNotes',
+    'submitterName', 'submitterEmail', 'submitterPhone',
+    'submitter_name', 'submitter_email', 'submitter_phone',
+    'reporterName', 'reporterEmail', 'reporterPhone', 'reporterId',
+    'user', 'userId', 'user_id', 'citizenId', 'citizen_id',
+    'citizenID', 'authUid', 'uid',
+    'notes', 'citizenNotes', 'citizenComment', 'citizenRemarks'
+  ];
+
+  for (const field of privateFields) {
+    delete citizenReport[field];
+  }
+
+  if (citizenReport.media && typeof citizenReport.media === 'object') {
+    const { url, type, fileName } = citizenReport.media;
+    citizenReport.media = { url, type, fileName };
+  }
+
+  return citizenReport;
+}
+
 // ==========================================
 // GET /api/links/verify/:id
 // Handles lookup using either reference linkKey or direct incidentId
@@ -174,14 +210,17 @@ router.get(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
       });
     }
 
+    const responseTarget = linkMetadata?.target || 'department';
+    const responseReport = sanitizeReportForTarget(report, responseTarget);
+
     return res.json({
       success: true,
       decoded: linkMetadata ? {
         incidentId: linkMetadata.incidentId,
-        target: linkMetadata.target,
+        target: responseTarget,
         origin: linkMetadata.origin
       } : { incidentId: targetIncidentId },
-      report
+      report: responseReport
     });
   } catch (err) {
     console.error('Link verification error:', err.message);
@@ -233,14 +272,17 @@ router.post(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
       });
     }
 
+    const responseTarget = linkMetadata?.target || 'department';
+    const responseReport = sanitizeReportForTarget(report, responseTarget);
+
     return res.json({
       success: true,
       decoded: linkMetadata ? {
         incidentId: linkMetadata.incidentId,
-        target: linkMetadata.target,
+        target: responseTarget,
         origin: linkMetadata.origin
       } : { incidentId: targetIncidentId },
-      report
+      report: responseReport
     });
   } catch (err) {
     console.error('Link verification error:', err.message);
