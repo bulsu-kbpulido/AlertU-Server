@@ -40,6 +40,16 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
       });
     }
 
+    // Resolve the supplied report identifier before creating the link.
+    // This prevents a link from storing a UI-only ID that cannot be found later.
+    const resolvedReport = await resolveReportByIncidentId(incidentId);
+    if (!resolvedReport) {
+      return res.status(404).json({
+        success: false,
+        message: `Report not found for identifier: ${String(incidentId)}`
+      });
+    }
+
     // Normalize the audience before using it in Firestore or URL generation.
     const normalizedTarget = String(target || '').toLowerCase() === 'citizen'
       ? 'citizen'
@@ -52,7 +62,10 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
     // Store mapping in Firestore `shared_links` collection.
     await db.collection('shared_links').doc(linkKey).set({
       linkKey,
-      incidentId,
+      // Always retain the canonical Firestore document ID for verification.
+      reportDocId: resolvedReport.id,
+      incidentId: resolvedReport.id,
+      sourceIncidentId: String(incidentId),
       target: normalizedTarget,
       origin: 'AlertU-Console',
       createdAt: Timestamp.now(),
@@ -199,7 +212,7 @@ router.get(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
         });
       }
 
-      targetIncidentId = linkMetadata.incidentId;
+      targetIncidentId = linkMetadata.reportDocId || linkMetadata.incidentId;
     }
 
     // Resolve report payload using the determined incidentId
@@ -218,7 +231,7 @@ router.get(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
     return res.json({
       success: true,
       decoded: linkMetadata ? {
-        incidentId: linkMetadata.incidentId,
+        incidentId: linkMetadata.reportDocId || linkMetadata.incidentId,
         target: responseTarget,
         origin: linkMetadata.origin
       } : { incidentId: targetIncidentId },
@@ -262,7 +275,7 @@ router.post(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
         });
       }
 
-      targetIncidentId = linkMetadata.incidentId;
+      targetIncidentId = linkMetadata.reportDocId || linkMetadata.incidentId;
     }
 
     const report = await resolveReportByIncidentId(targetIncidentId);
@@ -280,7 +293,7 @@ router.post(['/links/verify/:id', '/links/verify/:id/'], async (req, res) => {
     return res.json({
       success: true,
       decoded: linkMetadata ? {
-        incidentId: linkMetadata.incidentId,
+        incidentId: linkMetadata.reportDocId || linkMetadata.incidentId,
         target: responseTarget,
         origin: linkMetadata.origin
       } : { incidentId: targetIncidentId },
