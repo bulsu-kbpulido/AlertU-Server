@@ -58,7 +58,7 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
     const FRONTEND_URL = (process.env.APP_URL || 'https://alert-u-admin.vercel.app').replace(/\/+$/, '');
     
     // Clean Public Link (Uses linkKey in path, NO tokens in query string)
-    // Use one shared public URL pattern for both citizen and department links.
+    // Both targets use the same URL; target remains stored in shared_links.
     const targetPath = `/report/${linkKey}`;
     const secureLink = `${FRONTEND_URL}${targetPath}`;
 
