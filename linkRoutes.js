@@ -40,11 +40,16 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
       });
     }
 
-    // Generate unique reference key & set 7-day expiration
-    const linkKey = generateSecureLinkKey();
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); 
+    // Normalize the audience before using it in Firestore or URL generation.
+    const normalizedTarget = String(target || '').toLowerCase() === 'citizen'
+      ? 'citizen'
+      : 'department';
 
-    // Store mapping in Firestore `shared_links` collection
+    // Generate unique reference key & set 7-day expiration.
+    const linkKey = generateSecureLinkKey();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    // Store mapping in Firestore `shared_links` collection.
     await db.collection('shared_links').doc(linkKey).set({
       linkKey,
       incidentId,
@@ -54,10 +59,6 @@ router.post(['/links/generate', '/links/generate/'], verifyToken, linkGeneration
       expiresAt: Timestamp.fromDate(expiresAt),
       active: true
     });
-
-    const normalizedTarget = String(target || '').toLowerCase() === 'citizen'
-      ? 'citizen'
-      : 'department';
 
     const FRONTEND_URL = (process.env.APP_URL || 'https://alert-u-admin.vercel.app').replace(/\/+$/, '');
 
