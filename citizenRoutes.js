@@ -778,54 +778,7 @@ router.delete('/:id', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
-router.post('/update-presence', verifyFirebaseToken, async (req, res) => {
-  try {
-    const uid = req.body.uid || req.user.uid;
-    const citizenID = req.body.citizenID;
-    const isActive = Boolean(req.body.isActive);
-    const db = getFirestore();
 
-    let snapshot = await db.collection('citizens').doc(uid).get();
-    let ref = snapshot.exists ? snapshot.ref : null;
-
-    if (!ref) {
-      const byAuthUid = await db.collection('citizens')
-        .where('authUid', '==', uid)
-        .limit(1)
-        .get();
-      if (!byAuthUid.empty) ref = byAuthUid.docs[0].ref;
-    }
-
-    if (!ref && citizenID) {
-      const byCitizenId = await db.collection('citizens')
-        .where('citizenID', '==', citizenID)
-        .limit(1)
-        .get();
-      if (!byCitizenId.empty) ref = byCitizenId.docs[0].ref;
-    }
-
-    if (!ref) {
-      return res.status(404).json({
-        success: false,
-        error: 'Citizen record not found',
-      });
-    }
-
-    await ref.update({
-      isActive,
-      isOnline: isActive,
-      lastActiveAt: FieldValue.serverTimestamp(),
-    });
-
-    return res.json({ success: true, isActive, isOnline: isActive });
-  } catch (error) {
-    console.error('Presence REST update failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: 'Presence update failed',
-    });
-  }
-});
 
 
 module.exports = router;
