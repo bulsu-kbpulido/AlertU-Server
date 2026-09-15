@@ -51,7 +51,7 @@ router.get('/resolved-incidents', async (req, res) => {
 router.post('/resolve/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { sourceCollection } = req.body;
+    const { sourceCollection, aftermathDetails, casualties } = req.body;
 
     // Scan tracking matrices if client-side indicator dropped offline
     const candidateCollections = [];
@@ -138,6 +138,10 @@ router.post('/resolve/:id', async (req, res) => {
       normalizedPayload.resolvedAt = new Date().toISOString();
       normalizedPayload.updatedAt = new Date().toISOString();
       normalizedPayload.migrationSource = identifiedSource;
+
+      // Aftermath details captured by the admin before resolving (required on the frontend)
+      normalizedPayload.aftermathDetails = aftermathDetails || '';
+      normalizedPayload.casualties = typeof casualties === 'number' ? casualties : (Number(casualties) || 0);
 
       // Commit changes inside transaction state flow
       transaction.set(resolvedDocRef, normalizedPayload);
