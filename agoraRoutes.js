@@ -1,7 +1,9 @@
 const express = require('express');
 const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
-const admin = require('firebase-admin'); // Firebase Admin SDK
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const router = express.Router();
+
+const db = getFirestore();
 
 router.get('/agora-token', async (req, res) => {
   const { channelName, citizenId, callerName } = req.query;
@@ -45,18 +47,14 @@ router.get('/agora-token', async (req, res) => {
 
   // 3. Non-blocking Firestore session logging
   try {
-    if (admin.apps.length > 0) {
-      await admin.firestore().collection('active_calls').doc(channelName).set({
-        channelName,
-        citizenId: resolvedCitizenId,
-        submitterName: resolvedCallerName,
-        callerName: resolvedCallerName,
-        status: 'ringing',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    } else {
-      console.warn('⚠️ Firebase Admin SDK is not initialized. Skipping active_calls document write.');
-    }
+    await db.collection('active_calls').doc(channelName).set({
+      channelName,
+      citizenId: resolvedCitizenId,
+      submitterName: resolvedCallerName,
+      callerName: resolvedCallerName,
+      status: 'ringing',
+      createdAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
   } catch (fsErr) {
     console.error('⚠️ Firestore active_calls write error (non-fatal):', fsErr);
   }
@@ -97,8 +95,8 @@ router.post('/calls/claim', async (req, res) => {
   }
 
   try {
-    const callRef = admin.firestore().collection('active_calls').doc(String(channelName).trim());
-    const claimResult = await admin.firestore().runTransaction(async (transaction) => {
+    const callRef = db.collection('active_calls').doc(String(channelName).trim());
+    const claimResult = await db.runTransaction(async (transaction) => {
       const snap = await transaction.get(callRef);
 
       if (!snap.exists) {
@@ -127,7 +125,7 @@ router.post('/calls/claim', async (req, res) => {
           status: 'in_call',
           assignedAdminId: adminId,
           assignedAdminName: adminName || 'Dispatcher',
-          claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+          claimedAt: FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
