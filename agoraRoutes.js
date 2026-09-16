@@ -96,14 +96,8 @@ router.post('/calls/claim', async (req, res) => {
     return res.status(400).json({ success: false, message: 'adminId is required.' });
   }
 
-  if (admin.apps.length === 0) {
-    console.error('❌ Firebase Admin SDK is not initialized. Cannot claim call.');
-    return res.status(500).json({ success: false, message: 'Server storage is unavailable.' });
-  }
-
-  const callRef = admin.firestore().collection('active_calls').doc(String(channelName).trim());
-
   try {
+    const callRef = admin.firestore().collection('active_calls').doc(String(channelName).trim());
     const claimResult = await admin.firestore().runTransaction(async (transaction) => {
       const snap = await transaction.get(callRef);
 
