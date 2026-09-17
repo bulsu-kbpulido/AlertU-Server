@@ -67,6 +67,73 @@ async function updateCitizenPresence(db, uid, citizenIDInput, isActive) {
 }
 
 /**
+ * Helper to update admin / superadmin presence safely using targetRef.update()
+ */
+async function updateAdminPresence(db, uid, adminIdInput, isActive) {
+  if (!uid && !adminIdInput) return null;
+
+  try {
+    let targetRef = null;
+    let adminId = adminIdInput || null;
+    let docId = uid;
+
+    if (uid) {
+      const directDocRef = db.collection('admins').doc(uid);
+      const directDoc = await directDocRef.get();
+
+      if (directDoc.exists) {
+        targetRef = directDocRef;
+        adminId = directDoc.data()?.adminId || adminId;
+      }
+    }
+
+    if (!targetRef && uid) {
+      let querySnapshot = await db
+        .collection('admins')
+        .where('uid', '==', uid)
+        .limit(1)
+        .get();
+
+      if (querySnapshot.empty) {
+        querySnapshot = await db
+          .collection('admins')
+          .where('authUid', '==', uid)
+          .limit(1)
+          .get();
+      }
+
+      if (querySnapshot.empty && adminIdInput) {
+        querySnapshot = await db
+          .collection('admins')
+          .where('adminId', '==', adminIdInput)
+          .limit(1)
+          .get();
+      }
+
+      if (!querySnapshot.empty) {
+        const matchedDoc = querySnapshot.docs[0];
+        targetRef = matchedDoc.ref;
+        docId = matchedDoc.id;
+        adminId = matchedDoc.data()?.adminId || adminIdInput;
+      }
+    }
+
+    if (targetRef) {
+      await targetRef.update({
+        isActive: Boolean(isActive),
+        isOnline: Boolean(isActive),
+        lastActiveAt: FieldValue.serverTimestamp(),
+      });
+    }
+
+    return { docId, adminId };
+  } catch (err) {
+    console.error(`❌ Firestore admin presence sync failed for ID ${uid || adminIdInput}:`, err.message);
+    return null;
+  }
+}
+
+/**
  * Utility to resolve room and document keys deterministically.
  */
 const resolveDocKey = (rawId) => {
@@ -186,10 +253,31 @@ module.exports = {
         }
 
         const isActive = data.isActive ?? true;
-        socket.userData = { ...socket.userData, uid, citizenID: citizenIDInput };
+        const role = data?.role || socket.userData?.role;
+        socket.userData = { ...socket.userData, uid, citizenID: citizenIDInput, role };
 
         if (uid) socket.join(uid);
         if (citizenIDInput) socket.join(citizenIDInput);
+
+        const isAdminRole = role === 'admin' || role === 'dispatcher' || role === 'superadmin' || role === 'super_admin';
+
+        if (isAdminRole) {
+          const adminInfo = await updateAdminPresence(db, uid, data?.adminId, isActive);
+
+          const adminPayload = {
+            uid: uid || lookupKey,
+            authUid: uid || lookupKey,
+            id: adminInfo?.docId || uid || lookupKey,
+            adminId: adminInfo?.adminId || data?.adminId || lookupKey,
+            role,
+            isActive: Boolean(isActive),
+            isOnline: Boolean(isActive),
+          };
+
+          io.to('admins').emit('admin_presence_changed', adminPayload);
+          io.to('super_admins').emit('admin_presence_changed', adminPayload);
+          return;
+        }
 
         const citizenInfo = await updateCitizenPresence(db, uid, citizenIDInput, isActive);
 
@@ -227,6 +315,27 @@ module.exports = {
         );
 
         if (remainingSockets.length > 0) {
+          return;
+        }
+
+        const role = data?.role || socket.userData?.role;
+        const isAdminRole = role === 'admin' || role === 'dispatcher' || role === 'superadmin' || role === 'super_admin';
+
+        if (isAdminRole) {
+          const adminInfo = await updateAdminPresence(db, uid, data?.adminId, false);
+
+          const adminPayload = {
+            uid: uid || lookupKey,
+            authUid: uid || lookupKey,
+            id: adminInfo?.docId || uid || lookupKey,
+            adminId: adminInfo?.adminId || data?.adminId || lookupKey,
+            role,
+            isActive: false,
+            isOnline: false,
+          };
+
+          io.to('admins').emit('admin_presence_changed', adminPayload);
+          io.to('super_admins').emit('admin_presence_changed', adminPayload);
           return;
         }
 
