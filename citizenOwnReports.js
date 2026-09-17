@@ -32,23 +32,35 @@ router.use(verifyToken);
 // ==========================================
 
 /**
- * Helper function to atomically generate the next RID00000000 sequence
+ * Helper function to atomically generate the next RID00000000 sequence.
+ *
+ * IMPORTANT: this MUST point at the same counter document used by
+ * reportRoutes.js and duplicateReportRoutes.js (`counters/reports_counter`,
+ * field `current`). This endpoint previously used a separate counter doc
+ * (`counters/reports`, field `currentCount`), which meant two independent
+ * report-creation code paths were each handing out "next" numbers from
+ * their own counter — so both could generate the SAME RID (e.g. two
+ * different reports both becoming RID00000050). Since the RID is also used
+ * as the Firestore document ID in the 'reports' collection, one of the two
+ * reports would silently overwrite the other with no error. Reading/writing
+ * both 'current' and 'currentCount' fields keeps this compatible with any
+ * other code still reading the older field name.
  */
 const getNextReportID = async (db) => {
-    const counterRef = db.collection('counters').doc('reports');
+    const counterRef = db.collection('counters').doc('reports_counter');
 
     return await db.runTransaction(async (transaction) => {
         const counterDoc = await transaction.get(counterRef);
-        
+
         let currentCount = 0;
         if (counterDoc.exists) {
-            currentCount = counterDoc.data().currentCount || 0;
+            currentCount = counterDoc.data().current || counterDoc.data().currentCount || 0;
         }
 
         const nextCount = currentCount + 1;
         const formattedID = `RID${String(nextCount).padStart(8, '0')}`;
 
-        transaction.set(counterRef, { currentCount: nextCount }, { merge: true });
+        transaction.set(counterRef, { current: nextCount, currentCount: nextCount }, { merge: true });
 
         return formattedID;
     });
