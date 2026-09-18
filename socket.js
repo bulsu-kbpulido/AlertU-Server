@@ -702,7 +702,7 @@ module.exports = {
           pendingDisconnects.delete(lookupKey);
         }, 3000);
 
-        pendingDisconnects.set(lookupKey);
+        pendingDisconnects.set(lookupKey, timer);
       });
     });
 
