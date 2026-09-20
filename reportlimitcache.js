@@ -15,6 +15,8 @@ const reportCache = {
   active: { data: null, timestamp: 0 },
   duplicate: { data: null, timestamp: 0 },
   approved: { data: null, timestamp: 0 },
+  resolved: { data: null, timestamp: 0 },
+  archived: { data: null, timestamp: 0 },
 };
 
 // Cache Time-To-Live in milliseconds (30 seconds)
@@ -27,7 +29,7 @@ const MAX_USER_CACHE_SIZE = 1000;
 /**
  * Helper function to invalidate cache layers on mutations (Create/Verify/Reject/Restore/Delete)
  */
-function invalidateReportCache(keys = ['active', 'duplicate', 'approved']) {
+function invalidateReportCache(keys = ['active', 'duplicate', 'approved', 'resolved', 'archived']) {
   keys.forEach((key) => {
     if (reportCache[key]) {
       reportCache[key].data = null;
@@ -465,6 +467,102 @@ router.get('/reports', async (req, res) => {
 
       reportCache.approved = { data: mergedReports, timestamp: now };
       return res.status(200).json({ success: true, data: mergedReports });
+    }
+
+    // --- VIEW: ARCHIVED (GENERAL) REPORTS ---
+    // Same missing-branch bug as 'resolved': view === 'archived' had no
+    // dedicated branch, so it silently fell through to the default "pending
+    // open queue" branch — meaning the "13 Gen." portion of the Archived
+    // Reports card was actually just the Pending Reports count, not real
+    // archived data. This branch queries the actual archivedreports
+    // collection (confirmed via Firestore console — documents like
+    // RID00000082 with archivedAt, feedback, hazard, incidentType, etc.).
+    if (view === 'archived') {
+      if (reportCache.archived.data && (now - reportCache.archived.timestamp < CACHE_TTL_MS)) {
+        return res.status(200).json({ success: true, data: reportCache.archived.data, cached: true });
+      }
+
+      const archivedSnapshot = await db
+        .collection('archivedreports')
+        .limit(parsedLimit)
+        .get();
+
+      const archivedReportsList = await Promise.all(
+        archivedSnapshot.docs.map(async (doc) => {
+          const rawData = doc.data();
+          const data = await enrichWithSubmitterData(rawData);
+          const vrid = data.verifiedReportId || data.verifiedreportID || data.verifiedReportID || data.verifiedreportid || null;
+          const displayId = vrid || data.reportId || data.reportID || doc.id;
+
+          return {
+            ...data,
+            id: doc.id,
+            reportId: displayId,
+            reportID: displayId,
+            verifiedreportID: vrid,
+            verifiedReportId: vrid,
+            verifiedReportID: vrid,
+            verifiedreportid: vrid,
+            source: 'archived',
+            status: data.status || 'archived',
+            isDuplicate: typeof data.isDuplicate === 'boolean' ? data.isDuplicate : false,
+            timestamp: parseTimestamp(data.timestamp, data.archivedAt || data.createdAt)
+          };
+        })
+      );
+
+      archivedReportsList.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      reportCache.archived = { data: archivedReportsList, timestamp: now };
+      return res.status(200).json({ success: true, data: archivedReportsList });
+    }
+
+    // --- VIEW: RESOLVED INCIDENTS ---
+    // Previously there was no branch for view === 'resolved' at all, so
+    // requests for it fell straight through to the default branch below
+    // (the "pending open queue" — reports collection, isDuplicate == false).
+    // That's why the "Resolved Reports" dashboard card was showing the exact
+    // same count as "Pending Reports": both were silently hitting the same
+    // default code path. This branch queries the actual ResolvedReports
+    // collection instead.
+    if (view === 'resolved') {
+      if (reportCache.resolved.data && (now - reportCache.resolved.timestamp < CACHE_TTL_MS)) {
+        return res.status(200).json({ success: true, data: reportCache.resolved.data, cached: true });
+      }
+
+      const resolvedSnapshot = await db
+        .collection('ResolvedReports')
+        .limit(parsedLimit)
+        .get();
+
+      const resolvedReports = await Promise.all(
+        resolvedSnapshot.docs.map(async (doc) => {
+          const rawData = doc.data();
+          const data = await enrichWithSubmitterData(rawData);
+          const vrid = data.verifiedReportId || data.verifiedreportID || data.verifiedReportID || data.verifiedreportid || null;
+          const displayId = vrid || data.reportId || data.reportID || doc.id;
+
+          return {
+            ...data,
+            id: doc.id,
+            reportId: displayId,
+            reportID: displayId,
+            verifiedreportID: vrid,
+            verifiedReportId: vrid,
+            verifiedReportID: vrid,
+            verifiedreportid: vrid,
+            source: 'resolved',
+            status: data.status || 'resolved',
+            isDuplicate: typeof data.isDuplicate === 'boolean' ? data.isDuplicate : false,
+            timestamp: parseTimestamp(data.timestamp, data.resolvedAt || data.createdAt)
+          };
+        })
+      );
+
+      resolvedReports.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      reportCache.resolved = { data: resolvedReports, timestamp: now };
+      return res.status(200).json({ success: true, data: resolvedReports });
     }
 
     // --- VIEW / TAB: DUPLICATE TICKETS ---
