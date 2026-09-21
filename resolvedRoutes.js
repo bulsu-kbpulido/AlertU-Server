@@ -188,6 +188,11 @@ router.post('/resolve/restore/:id', async (req, res) => {
       delete restoredPayload.migrationSource;
       delete restoredPayload.resolvedAt;
 
+      // Aftermath belongs to the resolved state only, so clear it on restore
+      delete restoredPayload.aftermathDetails;
+      delete restoredPayload.casualties;
+      delete restoredPayload.injuries;
+
       // Reset status back to approved / active state
       restoredPayload.status = 'approved';
       restoredPayload.restoredAt = new Date().toISOString();
@@ -248,6 +253,11 @@ router.post('/resolve/batch-restore', async (req, res) => {
       const restoredPayload = { ...data };
       delete restoredPayload.migrationSource;
       delete restoredPayload.resolvedAt;
+
+      // Aftermath belongs to the resolved state only, so clear it on restore
+      delete restoredPayload.aftermathDetails;
+      delete restoredPayload.casualties;
+      delete restoredPayload.injuries;
 
       restoredPayload.status = 'approved';
       restoredPayload.restoredAt = new Date().toISOString();
