@@ -804,6 +804,7 @@ const handleVerification = async (req, res) => {
     status,
     incidentType,
     verifiedSeverity,
+    hazard,
     adminNotes,
     reportTitle, 
     selectedAgencies,
@@ -876,6 +877,8 @@ const handleVerification = async (req, res) => {
         status: status || 'verified',
         verifiedAt: new Date().toISOString(),
         verifiedBy: verifiedBy || sourceData.verifiedBy || 'Admin',
+        // Associated secondary hazard chosen by the admin during verification (None / Electrical / Chemical / Fire / custom)
+        hazard: (typeof hazard === 'string' && hazard.trim()) ? hazard.trim() : (sourceData.hazard || 'None'),
         adminNotes: adminNotes || sourceData.adminNotes || 'Verified.',
         reportTitle: reportTitle || sourceData.reportTitle || '',
         submitterName: sourceData.submitterName,

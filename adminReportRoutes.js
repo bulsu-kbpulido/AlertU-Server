@@ -533,6 +533,7 @@ router.patch('/reports/:id/verify', verifyToken, async (req, res) => {
     const {
       incidentType,
       verifiedSeverity,
+      hazard,
       adminNotes,
       reportTitle,
       selectedAgencies,
@@ -592,6 +593,8 @@ router.patch('/reports/:id/verify', verifyToken, async (req, res) => {
         incidentType: incidentType || existingData.incidentType || existingData.hazard || 'others',
         verifiedSeverity: verifiedSeverity || existingData.verifiedSeverity || existingData.severity || 'Medium',
         severity: verifiedSeverity || existingData.severity || 'Medium',
+        // Associated secondary hazard chosen by the admin during verification (None / Electrical / Chemical / Fire / custom)
+        hazard: (typeof hazard === 'string' && hazard.trim()) ? hazard.trim() : (existingData.hazard || 'None'),
         adminNotes: adminNotes || existingData.adminNotes || '',
         selectedAgencies: Array.isArray(selectedAgencies)
           ? selectedAgencies
