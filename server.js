@@ -174,6 +174,10 @@ const movementDetectorRoutes = require('./movementDetector'); // 🕵️‍♂�
 const duplicateReportRoutes = require('./duplicateReportRoutes');
 const duplicateTOreport = require('./duplicateTOreport');
 
+// 🚨 Broadcast Alerts & FCM Push Notification Engine
+const alertRoutes = require('./alertRoutes');
+const { initAlertsListener } = require('./alertNotifs');
+
 console.log('✅ All route modules loaded successfully');
 
 // ==========================================
@@ -243,6 +247,12 @@ app.use('/api', archivedApprovedRoutes);
 // 🔍 DUPLICATE MANAGEMENT ENDPOINTS
 app.use('/api/duplicates', duplicateReportRoutes);
 app.use('/api/duplicate-to-report', duplicateTOreport);
+
+// 🚨 BROADCAST ALERTS & FCM PUSH ENGINE
+app.use('/api', alertRoutes);
+
+// 📡 Start Real-Time Firestore Alerts Listener (Automatically pushes FCM notifications when alerts go active)
+initAlertsListener(db);
 
 console.log('✅ All routes mounted successfully');
 
