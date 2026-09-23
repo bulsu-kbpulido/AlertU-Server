@@ -68,7 +68,7 @@ async function sendToTopic(topic, alertData, alertId) {
     android: {
       priority: 'high',
       notification: {
-        channelId: 'emergency_alerts',
+        channelId: 'emergency_alerts_channel',
         sound: 'default',
         priority: 'max',
         defaultVibrateTimings: true,
