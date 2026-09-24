@@ -137,9 +137,13 @@ const resolveCitizenDoc = async (db, idOrCitizenID) => {
 // 📱 REGISTER FCM TOKEN
 router.post('/register-fcm-token', async (req, res) => {
   try {
-    const uid = req.user.uid;
+    const uid = req.user?.uid || req.body?.uid;
     const { fcmToken, token: fallbackToken } = req.body;
     const targetToken = fcmToken || fallbackToken;
+
+    if (!uid) {
+      return res.status(400).json({ success: false, error: 'User UID is required' });
+    }
 
     if (!targetToken) {
       return res.status(400).json({ success: false, error: 'fcmToken is required' });

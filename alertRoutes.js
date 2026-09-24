@@ -35,6 +35,21 @@ router.post('/alerts/broadcast', async (req, res) => {
       payload = docSnap.data();
     }
 
+    // 📡 Emit real-time Socket.IO event immediately for all connected mobile clients
+    try {
+      const socketModule = require('./socket');
+      const io = socketModule.getIO ? socketModule.getIO() : null;
+      if (io) {
+        io.emit('NEW_BROADCAST_ALERT', {
+          alertId: alertId || payload.id,
+          ...payload,
+        });
+        console.log(`📡 Broadcasted alert via Socket.IO [NEW_BROADCAST_ALERT]: "${payload.title || alertId}"`);
+      }
+    } catch (sockErr) {
+      console.warn('⚠️ Socket alert broadcast warning:', sockErr.message);
+    }
+
     const results = await trySendAlertNotification(payload, alertId || payload.id);
 
     return res.status(200).json({

@@ -239,6 +239,11 @@ app.use('/api', archivedRoutes);
 app.use('/api/citizens', mobileAvatarUploadRoutes); // 🖼️ Mounts /upload-avatar & /avatar/delete under /api/citizens FIRST
 app.use('/api/citizens', archivedCitizenRoutes); 
 app.use('/api/citizens', citizenRoutes); // 👤 Citizen engine mounted directly under /api/citizens
+// 📱 ALIAS: Support both /api/register-fcm-token and /api/citizens/register-fcm-token
+app.post('/api/register-fcm-token', (req, res, next) => {
+  req.url = '/register-fcm-token';
+  citizenRoutes(req, res, next);
+});
 app.use('/api/citizen-reports', citizenOwnReportsRoutes); 
 
 app.use('/api', resolvedRoutes);

@@ -186,6 +186,21 @@ function initAlertsListener(dbInstance) {
           if (change.type === 'added' || change.type === 'modified') {
             console.log(`🚨 Triggering FCM Push for Active Alert: "${data.title}" [${docId}]`);
 
+            // 📡 Real-time Socket.IO Broadcast for open mobile apps
+            try {
+              const socketModule = require('./socket');
+              const io = socketModule.getIO ? socketModule.getIO() : null;
+              if (io) {
+                io.emit('NEW_BROADCAST_ALERT', {
+                  alertId: docId,
+                  ...data,
+                });
+                console.log(`📡 Broadcasted active alert via Socket.IO from Firestore listener: "${data.title}"`);
+              }
+            } catch (sockErr) {
+              // Socket not yet initialized or non-critical error
+            }
+
             // Mark as pushed in Firestore to prevent duplicate triggers
             try {
               await alertsCol.doc(docId).set(
