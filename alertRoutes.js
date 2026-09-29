@@ -2,7 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { getFirestore } = require('firebase-admin/firestore');
-const { trySendAlertNotification } = require('./alertNotifs');
+const { broadcastAlert } = require('./alertNotifs');
 
 const db = getFirestore();
 
@@ -21,40 +21,39 @@ router.post('/alerts/broadcast', async (req, res) => {
       });
     }
 
-    let payload = alertData;
-
-    // If only alertId was provided, fetch document from Firestore
-    if (!payload && alertId) {
+    // The dashboard saves the alert to Firestore before calling this, so the
+    // stored document is the source of truth (a Resend's client copy is stale).
+    let stored = null;
+    if (alertId) {
       const docSnap = await db.collection('alerts').doc(alertId).get();
-      if (!docSnap.exists) {
-        return res.status(404).json({
-          success: false,
-          message: `Alert with ID "${alertId}" not found in Firestore.`,
-        });
-      }
-      payload = docSnap.data();
+      if (docSnap.exists) stored = docSnap.data();
     }
 
-    // 📡 Emit real-time Socket.IO event immediately for all connected mobile clients
-    try {
-      const socketModule = require('./socket');
-      const io = socketModule.getIO ? socketModule.getIO() : null;
-      if (io) {
-        io.emit('NEW_BROADCAST_ALERT', {
-          alertId: alertId || payload.id,
-          ...payload,
-        });
-        console.log(`📡 Broadcasted alert via Socket.IO [NEW_BROADCAST_ALERT]: "${payload.title || alertId}"`);
-      }
-    } catch (sockErr) {
-      console.warn('⚠️ Socket alert broadcast warning:', sockErr.message);
+    if (!stored && !alertData) {
+      return res.status(404).json({
+        success: false,
+        message: `Alert with ID "${alertId}" not found in Firestore.`,
+      });
     }
 
-    const results = await trySendAlertNotification(payload, alertId || payload.id);
+    const payload = { ...(alertData || {}), ...(stored || {}) };
+
+    const { skipped, results } = await broadcastAlert(payload, alertId || payload.id);
+
+    // A send that reached nobody must not look like success to the dashboard.
+    if (!skipped && results.length > 0 && results.every((r) => !r.success)) {
+      return res.status(502).json({
+        success: false,
+        message: 'FCM push failed for every target.',
+        results,
+      });
+    }
 
     return res.status(200).json({
       success: true,
-      message: 'Alert push notification dispatched successfully.',
+      message: skipped
+        ? 'Alert was already broadcast moments ago.'
+        : 'Alert push notification dispatched successfully.',
       results,
     });
   } catch (error) {
