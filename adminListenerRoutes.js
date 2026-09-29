@@ -328,12 +328,15 @@ async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
     return;
   }
 
-  // Target specific citizen topic (e.g., `citizen_CID00000001` or `user_AUTHUID`)
+  // The mobile app never subscribes to per-citizen topics, but it registers
+  // its FCM token on the citizen document -- so send straight to that token.
+  // The topic is only a fallback for citizens with no token on file.
+  const citizenToken = citizenSnapshot?.exists ? citizenSnapshot.data()?.fcmToken : null;
   const targetTopic = targetedCitizen?.citizenID 
     ? `citizen_${targetedCitizen.citizenID}` 
     : (targetedCitizen?.authUid ? `user_${targetedCitizen.authUid}` : null);
 
-  if (!targetTopic) return;
+  if (!citizenToken && !targetTopic) return;
 
   // 🎯 Format human-readable title & message based on action status
   let notificationTitle = `Report Update: ${payload.action}`;
@@ -371,11 +374,26 @@ async function dispatchTargetedFcmNotification(payload, targetedCitizen) {
       timestamp: String(payload.timestamp),
       metadata: JSON.stringify(payload.metadata || {}),
     },
-    topic: targetTopic,
+    ...(citizenToken ? { token: citizenToken } : { topic: targetTopic }),
+    // High priority + the app's real channel, so it rings with the app closed.
+    android: {
+      priority: 'high',
+      ttl: 60 * 60 * 1000,
+      notification: {
+        channelId: 'emergency_alerts_channel',
+        sound: 'default',
+        priority: 'max',
+        defaultVibrateTimings: true,
+      },
+    },
+    apns: {
+      headers: { 'apns-priority': '10' },
+      payload: { aps: { sound: 'default', contentAvailable: true } },
+    },
   };
 
   const response = await messaging.send(message);
-  console.log(`📲 [Targeted FCM Dispatched] Topic: ${targetTopic} | Message ID: ${response}`);
+  console.log(`📲 [Targeted FCM Dispatched] ${citizenToken ? 'Token' : `Topic: ${targetTopic}`} | Message ID: ${response}`);
 }
 
 module.exports = router;

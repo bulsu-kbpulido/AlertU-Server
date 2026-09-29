@@ -85,12 +85,16 @@ async function sendNewReportNotification(reportData = {}, reportId) {
     data,
     android: {
       priority: 'high',
+      ttl: 60 * 60 * 1000,
       notification: {
-        channelId: 'emergency_alerts',
+        channelId: 'emergency_alerts_channel',
         sound: 'default',
+        priority: 'max',
+        defaultVibrateTimings: true,
       },
     },
     apns: {
+      headers: { 'apns-priority': '10' },
       payload: {
         aps: {
           sound: 'default',
@@ -119,12 +123,16 @@ async function sendApprovedReportNotification(reportData = {}, reportId, targetT
     data,
     android: {
       priority: 'high',
+      ttl: 60 * 60 * 1000,
       notification: {
-        channelId: 'emergency_alerts',
+        channelId: 'emergency_alerts_channel',
         sound: 'default',
+        priority: 'max',
+        defaultVibrateTimings: true,
       },
     },
     apns: {
+      headers: { 'apns-priority': '10' },
       payload: {
         aps: {
           sound: 'default',

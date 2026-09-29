@@ -90,6 +90,20 @@ async function dispatchFcmNotification(payload) {
         timestamp: String(payload.timestamp),
       },
       topic: 'super_admin_alerts',
+      android: {
+        priority: 'high',
+        ttl: 60 * 60 * 1000,
+        notification: {
+          channelId: 'emergency_alerts_channel',
+          sound: 'default',
+          priority: 'max',
+          defaultVibrateTimings: true,
+        },
+      },
+      apns: {
+        headers: { 'apns-priority': '10' },
+        payload: { aps: { sound: 'default', contentAvailable: true } },
+      },
     };
 
     const response = await messaging.send(message);

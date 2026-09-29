@@ -94,12 +94,17 @@ async function handleSendMessage(socket, io, data) {
           },
           android: {
             priority: 'high',
+            ttl: 60 * 60 * 1000,
             notification: {
               sound: 'default',
-              channelId: 'emergency_chat_channel'
+              // Must match the channel the Flutter app creates.
+              channelId: 'emergency_alerts_channel',
+              priority: 'max',
+              defaultVibrateTimings: true
             }
           },
           apns: {
+            headers: { 'apns-priority': '10' },
             payload: {
               aps: { sound: 'default' }
             }
