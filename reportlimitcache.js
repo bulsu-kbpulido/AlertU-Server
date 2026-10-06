@@ -52,6 +52,30 @@ function formatReportId(counterNumber) {
   return `RID${String(counterNumber).padStart(8, '0')}`;
 }
 
+/**
+ * True when [id] is already a sequential report id such as "RID00000105".
+ */
+function isSequentialReportId(id) {
+  return typeof id === 'string' && /^RID\d{8}$/.test(id);
+}
+
+/**
+ * Reserves the next sequential report id (RID00000105 ...) from the same
+ * `counters/reports_counter` document that normal report creation uses.
+ * Used when a duplicate (which only has a random NanoID) is restored to the
+ * active queue, so it gets a proper RID instead of keeping the random id.
+ */
+async function allocateSequentialReportId() {
+  const counterRef = db.collection('counters').doc('reports_counter');
+  return db.runTransaction(async (transaction) => {
+    const counterDoc = await transaction.get(counterRef);
+    const currentCounter = counterDoc.exists ? (counterDoc.data().current || 0) : 0;
+    const nextCounter = currentCounter + 1;
+    transaction.set(counterRef, { current: nextCounter }, { merge: true });
+    return formatReportId(nextCounter);
+  });
+}
+
 function formatVerifiedReportId(counterNumber) {
   return `VRID${String(counterNumber).padStart(8, '0')}`;
 }
@@ -1142,13 +1166,22 @@ router.post('/duplicate-reports/:id/restore', async (req, res) => {
 
     const duplicateSnap = result.snap;
     const reportData = duplicateSnap.data();
-    const targetReportId = reportData.reportId || reportData.reportID || duplicateSnap.id;
+    let targetReportId = reportData.reportId || reportData.reportID || duplicateSnap.id;
+    let previousReportId = null;
+
+    // Duplicates are stored under a random NanoID. Give the restored report a
+    // proper sequential RID instead of carrying the random id into Active Reports.
+    if (!isSequentialReportId(targetReportId)) {
+      previousReportId = targetReportId;
+      targetReportId = await allocateSequentialReportId();
+    }
 
     const restoredPayload = cleanUndefinedValues({
       ...reportData,
       id: duplicateSnap.id,
       reportId: targetReportId,
       reportID: targetReportId,
+      ...(previousReportId && { previousReportId }),
       status: 'pending',
       isDuplicate: false,
       parentReportId: FieldValue.delete(),
@@ -1237,7 +1270,15 @@ router.post('/duplicate-reports/batch-restore', async (req, res) => {
       if (result && result.snap) {
         const dupSnap = result.snap;
         const data = dupSnap.data();
-        const targetId = data.reportId || data.reportID || dupSnap.id;
+        let targetId = data.reportId || data.reportID || dupSnap.id;
+        let previousReportId = null;
+
+        // Same rule as single restore: random NanoIDs become sequential RIDs.
+        if (!isSequentialReportId(targetId)) {
+          previousReportId = targetId;
+          targetId = await allocateSequentialReportId();
+        }
+
         const targetRef = db.collection('reports').doc(targetId);
 
         const restoredData = cleanUndefinedValues({
@@ -1245,6 +1286,7 @@ router.post('/duplicate-reports/batch-restore', async (req, res) => {
           id: dupSnap.id,
           reportId: targetId,
           reportID: targetId,
+          ...(previousReportId && { previousReportId }),
           status: 'pending',
           isDuplicate: false,
           parentReportId: FieldValue.delete(),
