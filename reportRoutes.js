@@ -673,8 +673,8 @@ const handleVerification = async (req, res) => {
     isSensitive,
     location,
     verifiedBy,
-    hasPropertyDamage,     // 👈 Extracted from request body
-    needsMedicalAssistance // 👈 Extracted from request body
+    isMedicalAssistance, // 👈 Updated property name
+    isPropertyDamage     // 👈 Updated property name
   } = req.body;
 
   if (!id) {
@@ -755,10 +755,10 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // 👇 Conditionally save accident checkboxes vs standard severity
+        // 👇 Conditionally save accident boolean fields vs standard severity
         ...(isAccident ? {
-          hasPropertyDamage: typeof hasPropertyDamage === 'boolean' ? hasPropertyDamage : (sourceData.hasPropertyDamage || false),
-          needsMedicalAssistance: typeof needsMedicalAssistance === 'boolean' ? needsMedicalAssistance : (sourceData.needsMedicalAssistance || false),
+          isPropertyDamage: typeof isPropertyDamage === 'boolean' ? isPropertyDamage : (sourceData.isPropertyDamage || sourceData.hasPropertyDamage || false),
+          isMedicalAssistance: typeof isMedicalAssistance === 'boolean' ? isMedicalAssistance : (sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance || false),
           severity: 'Medium'
         } : {
           severity: verifiedSeverity || sourceData.severity || 'Medium',
