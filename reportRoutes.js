@@ -787,7 +787,7 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // Always persist explicit boolean values for Firestore
+        // Always persist explicit boolean values directly into approved_reports
         isPropertyDamage: finalPropertyDamage,
         isMedicalAssistance: finalMedicalAssistance,
         ...(!isAccident
@@ -824,7 +824,7 @@ const handleVerification = async (req, res) => {
         timestamp: parseTimestamp(sourceData.timestamp, sourceData.createdAt)
       });
 
-      // Step D: Write payload to destination and delete source if moving
+      // Step D: Write payload directly to approved_reports destination and delete source if moving
       transaction.set(destinationApprovedRef, approvedData);
 
       if (foundCollection !== 'approved_reports') {
