@@ -673,10 +673,13 @@ const handleVerification = async (req, res) => {
     isSensitive,
     location,
     verifiedBy,
+    // Flexible destructuring for accident flags across body variations
     isMedicalAssistance,
     needsMedicalAssistance,
+    isMedicalAssistanceBool,
     isPropertyDamage,
-    hasPropertyDamage
+    hasPropertyDamage,
+    isPropertyDamageBool
   } = req.body;
 
   if (!id) {
@@ -747,7 +750,7 @@ const handleVerification = async (req, res) => {
       const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
       const isAccident = String(resolvedIncidentType).trim().toLowerCase() === 'accident';
 
-      // Accident reports use the checkbox fields instead of severity. Remove any
+      // Accident reports use checkbox flags instead of severity. Remove any
       // legacy severity values inherited from the source report before saving.
       const sourceDataForApproved = isAccident
         ? Object.fromEntries(
@@ -755,21 +758,24 @@ const handleVerification = async (req, res) => {
           )
         : sourceData;
 
-      // Respect explicit false values; accept legacy aliases only when the canonical
-      // request fields are absent. Always produce real booleans for Firestore.
-      const finalPropertyDamage =
-        typeof isPropertyDamage === 'boolean'
-          ? isPropertyDamage
-          : typeof hasPropertyDamage === 'boolean'
-          ? hasPropertyDamage
-          : Boolean(sourceData.isPropertyDamage ?? sourceData.hasPropertyDamage ?? false);
+      // Robust boolean determination supporting body parameters or fallback to source data
+      const finalPropertyDamage = Boolean(
+        isPropertyDamage ?? 
+        hasPropertyDamage ?? 
+        isPropertyDamageBool ?? 
+        sourceData.isPropertyDamage ?? 
+        sourceData.hasPropertyDamage ?? 
+        false
+      );
 
-      const finalMedicalAssistance =
-        typeof isMedicalAssistance === 'boolean'
-          ? isMedicalAssistance
-          : typeof needsMedicalAssistance === 'boolean'
-          ? needsMedicalAssistance
-          : Boolean(sourceData.isMedicalAssistance ?? sourceData.needsMedicalAssistance ?? false);
+      const finalMedicalAssistance = Boolean(
+        isMedicalAssistance ?? 
+        needsMedicalAssistance ?? 
+        isMedicalAssistanceBool ?? 
+        sourceData.isMedicalAssistance ?? 
+        sourceData.needsMedicalAssistance ?? 
+        false
+      );
 
       const approvedData = cleanUndefinedValues({
         ...sourceDataForApproved,
@@ -781,8 +787,7 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // Persist both checkbox values for every verified report. Firestore stores
-        // false values too; do not omit the fields based on incident type.
+        // Always persist explicit boolean values for Firestore
         isPropertyDamage: finalPropertyDamage,
         isMedicalAssistance: finalMedicalAssistance,
         ...(!isAccident
@@ -792,7 +797,6 @@ const handleVerification = async (req, res) => {
         status: status || 'verified',
         verifiedAt: new Date().toISOString(),
         verifiedBy: verifiedBy || sourceData.verifiedBy || 'Admin',
-        // Associated secondary hazard chosen by the admin during verification (None / Electrical / Chemical / Fire / custom)
         hazard: (typeof hazard === 'string' && hazard.trim()) ? hazard.trim() : (sourceData.hazard || 'None'),
         adminNotes: adminNotes || sourceData.adminNotes || 'Verified.',
         
