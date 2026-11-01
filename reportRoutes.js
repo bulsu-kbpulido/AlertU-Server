@@ -745,7 +745,15 @@ const handleVerification = async (req, res) => {
         : {};
 
       const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
-      const isAccident = String(resolvedIncidentType).toLowerCase() === 'accident';
+      const isAccident = String(resolvedIncidentType).trim().toLowerCase() === 'accident';
+
+      // Accident reports use the checkbox fields instead of severity. Remove any
+      // legacy severity values inherited from the source report before saving.
+      const sourceDataForApproved = isAccident
+        ? Object.fromEntries(
+            Object.entries(sourceData).filter(([key]) => key !== 'severity' && key !== 'verifiedSeverity')
+          )
+        : sourceData;
 
       // Respect explicit false values; accept legacy aliases only when the canonical
       // request fields are absent. Always produce real booleans for Firestore.
@@ -764,7 +772,7 @@ const handleVerification = async (req, res) => {
           : Boolean(sourceData.isMedicalAssistance ?? sourceData.needsMedicalAssistance ?? false);
 
       const approvedData = cleanUndefinedValues({
-        ...sourceData,
+        ...sourceDataForApproved,
         id: sourceData.id || docId,
         reportId: sourceData.reportId || sourceData.reportID || docId,
         reportID: sourceData.reportID || sourceData.reportId || docId,
@@ -777,9 +785,9 @@ const handleVerification = async (req, res) => {
         // false values too; do not omit the fields based on incident type.
         isPropertyDamage: finalPropertyDamage,
         isMedicalAssistance: finalMedicalAssistance,
-        ...(isAccident
-          ? { severity: 'Medium' }
-          : { severity: verifiedSeverity || sourceData.severity || 'Medium' }),
+        ...(!isAccident
+          ? { severity: verifiedSeverity || sourceData.severity || 'Medium' }
+          : {}),
 
         status: status || 'verified',
         verifiedAt: new Date().toISOString(),
