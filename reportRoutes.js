@@ -674,9 +674,9 @@ const handleVerification = async (req, res) => {
     location,
     verifiedBy,
     isMedicalAssistance,
-    needsMedicalAssistance, // 👈 Option B: Accept both property name variations
+    needsMedicalAssistance,
     isPropertyDamage,
-    hasPropertyDamage       // 👈 Option B: Accept both property name variations
+    hasPropertyDamage
   } = req.body;
 
   if (!id) {
@@ -747,6 +747,21 @@ const handleVerification = async (req, res) => {
       const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
       const isAccident = String(resolvedIncidentType).toLowerCase() === 'accident';
 
+      // Explicit boolean evaluation ensuring values are never undefined
+      const finalPropertyDamage =
+        typeof isPropertyDamage === 'boolean'
+          ? isPropertyDamage
+          : typeof hasPropertyDamage === 'boolean'
+          ? hasPropertyDamage
+          : Boolean(sourceData.isPropertyDamage || sourceData.hasPropertyDamage);
+
+      const finalMedicalAssistance =
+        typeof isMedicalAssistance === 'boolean'
+          ? isMedicalAssistance
+          : typeof needsMedicalAssistance === 'boolean'
+          ? needsMedicalAssistance
+          : Boolean(sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance);
+
       const approvedData = cleanUndefinedValues({
         ...sourceData,
         id: sourceData.id || docId,
@@ -757,14 +772,10 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // 👇 Conditionally save accident boolean fields vs standard severity, falling back safely across keys
+        // Conditionally save accident boolean fields vs standard severity, with guaranteed boolean fallbacks
         ...(isAccident ? {
-          isPropertyDamage: typeof isPropertyDamage === 'boolean' 
-            ? isPropertyDamage 
-            : (typeof hasPropertyDamage === 'boolean' ? hasPropertyDamage : (sourceData.isPropertyDamage || sourceData.hasPropertyDamage || false)),
-          isMedicalAssistance: typeof isMedicalAssistance === 'boolean' 
-            ? isMedicalAssistance 
-            : (typeof needsMedicalAssistance === 'boolean' ? needsMedicalAssistance : (sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance || false)),
+          isPropertyDamage: finalPropertyDamage,
+          isMedicalAssistance: finalMedicalAssistance,
           severity: 'Medium'
         } : {
           severity: verifiedSeverity || sourceData.severity || 'Medium',
