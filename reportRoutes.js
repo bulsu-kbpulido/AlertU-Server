@@ -672,7 +672,9 @@ const handleVerification = async (req, res) => {
     routeCoords,
     isSensitive,
     location,
-    verifiedBy
+    verifiedBy,
+    hasPropertyDamage,     // 👈 Extracted from request body
+    needsMedicalAssistance // 👈 Extracted from request body
   } = req.body;
 
   if (!id) {
@@ -740,6 +742,9 @@ const handleVerification = async (req, res) => {
         ? sourceData.location
         : {};
 
+      const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
+      const isAccident = String(resolvedIncidentType).toLowerCase() === 'accident';
+
       const approvedData = cleanUndefinedValues({
         ...sourceData,
         id: sourceData.id || docId,
@@ -748,8 +753,17 @@ const handleVerification = async (req, res) => {
         verifiedReportId: generatedVRID,
         verifiedreportID: generatedVRID,
         incidentId: docId,
-        incidentType: incidentType || sourceData.incidentType || 'others',
-        severity: verifiedSeverity || sourceData.severity || 'Medium',
+        incidentType: resolvedIncidentType,
+        
+        // 👇 Conditionally save accident checkboxes vs standard severity
+        ...(isAccident ? {
+          hasPropertyDamage: typeof hasPropertyDamage === 'boolean' ? hasPropertyDamage : (sourceData.hasPropertyDamage || false),
+          needsMedicalAssistance: typeof needsMedicalAssistance === 'boolean' ? needsMedicalAssistance : (sourceData.needsMedicalAssistance || false),
+          severity: 'Medium'
+        } : {
+          severity: verifiedSeverity || sourceData.severity || 'Medium',
+        }),
+
         status: status || 'verified',
         verifiedAt: new Date().toISOString(),
         verifiedBy: verifiedBy || sourceData.verifiedBy || 'Admin',
