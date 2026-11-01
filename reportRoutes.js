@@ -747,20 +747,21 @@ const handleVerification = async (req, res) => {
       const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
       const isAccident = String(resolvedIncidentType).toLowerCase() === 'accident';
 
-      // Explicit boolean evaluation ensuring values are never undefined
+      // Respect explicit false values; accept legacy aliases only when the canonical
+      // request fields are absent. Always produce real booleans for Firestore.
       const finalPropertyDamage =
         typeof isPropertyDamage === 'boolean'
           ? isPropertyDamage
           : typeof hasPropertyDamage === 'boolean'
           ? hasPropertyDamage
-          : Boolean(sourceData.isPropertyDamage || sourceData.hasPropertyDamage);
+          : Boolean(sourceData.isPropertyDamage ?? sourceData.hasPropertyDamage ?? false);
 
       const finalMedicalAssistance =
         typeof isMedicalAssistance === 'boolean'
           ? isMedicalAssistance
           : typeof needsMedicalAssistance === 'boolean'
           ? needsMedicalAssistance
-          : Boolean(sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance);
+          : Boolean(sourceData.isMedicalAssistance ?? sourceData.needsMedicalAssistance ?? false);
 
       const approvedData = cleanUndefinedValues({
         ...sourceData,
@@ -772,14 +773,13 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // Conditionally save accident boolean fields vs standard severity, with guaranteed boolean fallbacks
-        ...(isAccident ? {
-          isPropertyDamage: finalPropertyDamage,
-          isMedicalAssistance: finalMedicalAssistance,
-          severity: 'Medium'
-        } : {
-          severity: verifiedSeverity || sourceData.severity || 'Medium',
-        }),
+        // Persist both checkbox values for every verified report. Firestore stores
+        // false values too; do not omit the fields based on incident type.
+        isPropertyDamage: finalPropertyDamage,
+        isMedicalAssistance: finalMedicalAssistance,
+        ...(isAccident
+          ? { severity: 'Medium' }
+          : { severity: verifiedSeverity || sourceData.severity || 'Medium' }),
 
         status: status || 'verified',
         verifiedAt: new Date().toISOString(),
