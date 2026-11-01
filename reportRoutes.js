@@ -673,8 +673,10 @@ const handleVerification = async (req, res) => {
     isSensitive,
     location,
     verifiedBy,
-    isMedicalAssistance, // 👈 Updated property name
-    isPropertyDamage     // 👈 Updated property name
+    isMedicalAssistance,
+    needsMedicalAssistance, // 👈 Option B: Accept both property name variations
+    isPropertyDamage,
+    hasPropertyDamage       // 👈 Option B: Accept both property name variations
   } = req.body;
 
   if (!id) {
@@ -755,10 +757,14 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // 👇 Conditionally save accident boolean fields vs standard severity
+        // 👇 Conditionally save accident boolean fields vs standard severity, falling back safely across keys
         ...(isAccident ? {
-          isPropertyDamage: typeof isPropertyDamage === 'boolean' ? isPropertyDamage : (sourceData.isPropertyDamage || sourceData.hasPropertyDamage || false),
-          isMedicalAssistance: typeof isMedicalAssistance === 'boolean' ? isMedicalAssistance : (sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance || false),
+          isPropertyDamage: typeof isPropertyDamage === 'boolean' 
+            ? isPropertyDamage 
+            : (typeof hasPropertyDamage === 'boolean' ? hasPropertyDamage : (sourceData.isPropertyDamage || sourceData.hasPropertyDamage || false)),
+          isMedicalAssistance: typeof isMedicalAssistance === 'boolean' 
+            ? isMedicalAssistance 
+            : (typeof needsMedicalAssistance === 'boolean' ? needsMedicalAssistance : (sourceData.isMedicalAssistance || sourceData.needsMedicalAssistance || false)),
           severity: 'Medium'
         } : {
           severity: verifiedSeverity || sourceData.severity || 'Medium',
