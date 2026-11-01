@@ -673,7 +673,6 @@ const handleVerification = async (req, res) => {
     isSensitive,
     location,
     verifiedBy,
-    // Flexible destructuring for accident flags across body variations
     isMedicalAssistance,
     needsMedicalAssistance,
     isMedicalAssistanceBool,
@@ -687,42 +686,57 @@ const handleVerification = async (req, res) => {
   }
 
   try {
+    // 🛠️ FIX: Resolve document reference OUTSIDE the transaction.
+    // (Firestore does not allow `.where()` queries inside transactions).
+    const collectionsToSearch = ['reports', 'ApprovedAdminReports', 'approved_reports', 'duplicate_reports'];
+    let sourceReportRef = null;
+    let foundCollection = null;
+
+    for (const col of collectionsToSearch) {
+      const docRef = db.collection(col).doc(id);
+      const docSnap = await docRef.get();
+
+      if (docSnap.exists) {
+        sourceReportRef = docRef;
+        foundCollection = col;
+        break;
+      }
+
+      const qId = await db.collection(col).where('id', '==', id).limit(1).get();
+      if (!qId.empty) {
+        sourceReportRef = qId.docs[0].ref;
+        foundCollection = col;
+        break;
+      }
+
+      const qReportId = await db.collection(col).where('reportId', '==', id).limit(1).get();
+      if (!qReportId.empty) {
+        sourceReportRef = qReportId.docs[0].ref;
+        foundCollection = col;
+        break;
+      }
+
+      const qReportID = await db.collection(col).where('reportID', '==', id).limit(1).get();
+      if (!qReportID.empty) {
+        sourceReportRef = qReportID.docs[0].ref;
+        foundCollection = col;
+        break;
+      }
+    }
+
+    if (!sourceReportRef) {
+      return res.status(404).json({ success: false, message: "Pending or target report not found." });
+    }
+
     const verifiedCounterRef = db.collection('counters').doc('verified_reports_counter');
 
     const result = await db.runTransaction(async (transaction) => {
-      // Step A: Find the target report across collections
-      const collectionsToSearch = ['reports', 'ApprovedAdminReports', 'approved_reports', 'duplicate_reports'];
-      let sourceReportRef = null;
-      let docSnapshot = null;
-      let foundCollection = null;
-
-      for (const col of collectionsToSearch) {
-        let ref = db.collection(col).doc(id);
-        let snap = await transaction.get(ref);
-
-        if (!snap.exists) {
-          let q = await db.collection(col).where('id', '==', id).limit(1).get();
-          if (q.empty) q = await db.collection(col).where('reportId', '==', id).limit(1).get();
-          if (q.empty) q = await db.collection(col).where('reportID', '==', id).limit(1).get();
-
-          if (!q.empty) {
-            snap = await transaction.get(q.docs[0].ref);
-          }
-        }
-
-        if (snap && snap.exists) {
-          docSnapshot = snap;
-          sourceReportRef = snap.ref;
-          foundCollection = col;
-          break;
-        }
+      // Inside transaction: only direct document reads & writes
+      const docSnapshot = await transaction.get(sourceReportRef);
+      if (!docSnapshot.exists) {
+        throw new Error("Target report document no longer exists.");
       }
 
-      if (!docSnapshot || !docSnapshot.exists) {
-        throw new Error("Pending or target report not found.");
-      }
-
-      // Step B: Atomic VRID Generation via Transaction Counter
       const rawSourceData = docSnapshot.data();
       let generatedVRID = rawSourceData.verifiedReportId || rawSourceData.verifiedreportID;
 
@@ -738,7 +752,6 @@ const handleVerification = async (req, res) => {
         transaction.set(verifiedCounterRef, { current: nextCounter, currentValue: nextCounter }, { merge: true });
       }
 
-      // Step C: Prepare destination payload
       const docId = docSnapshot.id;
       const destinationApprovedRef = db.collection('approved_reports').doc(docId);
       
@@ -750,15 +763,12 @@ const handleVerification = async (req, res) => {
       const resolvedIncidentType = incidentType || sourceData.incidentType || 'others';
       const isAccident = String(resolvedIncidentType).trim().toLowerCase() === 'accident';
 
-      // Accident reports use checkbox flags instead of severity. Remove any
-      // legacy severity values inherited from the source report before saving.
       const sourceDataForApproved = isAccident
         ? Object.fromEntries(
             Object.entries(sourceData).filter(([key]) => key !== 'severity' && key !== 'verifiedSeverity')
           )
         : sourceData;
 
-      // Robust boolean determination supporting body parameters or fallback to source data
       const finalPropertyDamage = Boolean(
         isPropertyDamage ?? 
         hasPropertyDamage ?? 
@@ -787,7 +797,6 @@ const handleVerification = async (req, res) => {
         incidentId: docId,
         incidentType: resolvedIncidentType,
         
-        // Always persist explicit boolean values directly into approved_reports
         isPropertyDamage: finalPropertyDamage,
         isMedicalAssistance: finalMedicalAssistance,
         ...(!isAccident
@@ -824,7 +833,6 @@ const handleVerification = async (req, res) => {
         timestamp: parseTimestamp(sourceData.timestamp, sourceData.createdAt)
       });
 
-      // Step D: Write payload directly to approved_reports destination and delete source if moving
       transaction.set(destinationApprovedRef, approvedData);
 
       if (foundCollection !== 'approved_reports') {
@@ -846,7 +854,6 @@ const handleVerification = async (req, res) => {
       });
     }
 
-    // 🚀 Trigger FCM Push Notification only when migrated to approved_reports
     await trySendApprovedReportNotification(result, result.verifiedReportId);
 
     return res.status(200).json({
