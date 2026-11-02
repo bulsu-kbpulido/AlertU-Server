@@ -126,6 +126,10 @@ router.post('/admin-reports', verifyToken, async (req, res) => {
       mediaFileName,
       timestamp,
       isSensitive,
+      isPropertyDamage,
+      hasPropertyDamage,
+      isMedicalAssistance,
+      needsMedicalAssistance,
       selectedAgencies = [],
       radius,
       polyline,
@@ -159,6 +163,9 @@ router.post('/admin-reports', verifyToken, async (req, res) => {
     let generatedVRID = '';
     let docId = '';
     let reportData = {};
+    const isAccident = String(incidentType || '').trim().toLowerCase() === 'accident';
+    const finalPropertyDamage = isAccident && Boolean(isPropertyDamage ?? hasPropertyDamage ?? false);
+    const finalMedicalAssistance = isAccident && Boolean(isMedicalAssistance ?? needsMedicalAssistance ?? false);
 
     // Execute Firestore Transaction to atomically increment VRID counter
     await db.runTransaction(async (transaction) => {
@@ -192,6 +199,10 @@ router.post('/admin-reports', verifyToken, async (req, res) => {
         reportTimestamp: timestamp || currentIsoTime,
 
         isSensitive: isSensitive === true,
+        isPropertyDamage: finalPropertyDamage,
+        hasPropertyDamage: finalPropertyDamage,
+        isMedicalAssistance: finalMedicalAssistance,
+        needsMedicalAssistance: finalMedicalAssistance,
         selectedAgencies,
 
         location: {
