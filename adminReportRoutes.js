@@ -544,7 +544,11 @@ router.patch('/reports/:id/verify', verifyToken, async (req, res) => {
       polyline,
       selectedMarkerIcon,
       routeCoords,
-      isSensitive
+      isSensitive,
+      isPropertyDamage,
+      hasPropertyDamage,
+      isMedicalAssistance,
+      needsMedicalAssistance
     } = req.body;
 
     let generatedVRID = '';
@@ -574,6 +578,27 @@ router.patch('/reports/:id/verify', verifyToken, async (req, res) => {
         ? parseFloat(correctedLongitude)
         : (existingData.longitude ?? existingLocation.longitude ?? null);
       const address = correctedAddress || existingData.address || existingLocation.address || 'Unknown';
+      const resolvedIncidentType = String(
+        incidentType || existingData.incidentType || existingData.hazard || 'others'
+      ).trim().toLowerCase();
+      const isAccident = resolvedIncidentType === 'accident';
+
+      // Persist checkbox flags for accident reports, preserving existing values
+      // when a client does not send either spelling of a field.
+      const propertyDamage = isAccident && Boolean(
+        isPropertyDamage ??
+        hasPropertyDamage ??
+        existingData.isPropertyDamage ??
+        existingData.hasPropertyDamage ??
+        false
+      );
+      const medicalAssistance = isAccident && Boolean(
+        isMedicalAssistance ??
+        needsMedicalAssistance ??
+        existingData.isMedicalAssistance ??
+        existingData.needsMedicalAssistance ??
+        false
+      );
 
       approvedReport = {
         ...existingData,
@@ -590,7 +615,11 @@ router.patch('/reports/:id/verify', verifyToken, async (req, res) => {
         updatedAt: currentIsoTime,
         verifiedBy: req.user?.uid || req.user?.email || 'Admin',
         reportTitle: reportTitle?.trim() || existingData.reportTitle || existingData.title || '',
-        incidentType: incidentType || existingData.incidentType || existingData.hazard || 'others',
+        incidentType: resolvedIncidentType,
+        isPropertyDamage: propertyDamage,
+        hasPropertyDamage: propertyDamage,
+        isMedicalAssistance: medicalAssistance,
+        needsMedicalAssistance: medicalAssistance,
         verifiedSeverity: verifiedSeverity || existingData.verifiedSeverity || existingData.severity || 'Medium',
         severity: verifiedSeverity || existingData.severity || 'Medium',
         // Associated secondary hazard chosen by the admin during verification (None / Electrical / Chemical / Fire / custom)
